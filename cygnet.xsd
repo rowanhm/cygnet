@@ -1,0 +1,299 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xs:schema xmlns:xs="http://www.w3.org/2001/XMLSchema"
+           elementFormDefault="qualified">
+
+  <!-- Root element for the Cygnet lexical resource -->
+  <xs:element name="CygnetResource">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="ConceptLayer" minOccurs="0" maxOccurs="1"/>
+        <xs:element ref="WordformLayer" minOccurs="0" maxOccurs="1"/>
+        <xs:element ref="SenseLayer" minOccurs="0" maxOccurs="1"/>
+        <xs:element ref="GlossLayer" minOccurs="0" maxOccurs="1"/>
+        <xs:element ref="ExampleLayer" minOccurs="0" maxOccurs="1"/>
+        <xs:element ref="WordformRelationLayer" minOccurs="0" maxOccurs="1"/>
+        <xs:element ref="SenseRelationLayer" minOccurs="0" maxOccurs="1"/>
+        <xs:element ref="ConceptRelationLayer" minOccurs="0" maxOccurs="1"/>
+      </xs:sequence>
+      <!-- Metadata attributes -->
+      <xs:attribute name="id" type="xs:ID" use="required"/>
+      <xs:attribute name="label" type="xs:string" use="required"/>
+      <xs:attribute name="version" type="xs:string" use="required"/>
+    </xs:complexType>
+
+    <!-- Key definitions for typed references -->
+
+    <!-- Concept keys -->
+    <xs:key name="ConceptKey">
+      <xs:selector xpath="ConceptLayer/Concept"/>
+      <xs:field xpath="@id"/>
+    </xs:key>
+
+    <!-- Wordform keys -->
+    <xs:key name="WordformKey">
+      <xs:selector xpath="WordformLayer/*"/>
+      <xs:field xpath="@id"/>
+    </xs:key>
+
+    <!-- Sense keys -->
+    <xs:key name="SenseKey">
+      <xs:selector xpath="SenseLayer/Sense"/>
+      <xs:field xpath="@id"/>
+    </xs:key>
+
+    <!-- Keyref: Sense.signifier must reference a Wordform (either type) -->
+    <xs:keyref name="SenseSignifierRef" refer="WordformKey">
+      <xs:selector xpath="SenseLayer/Sense"/>
+      <xs:field xpath="@signifier"/>
+    </xs:keyref>
+
+    <!-- Keyref: Sense.signified must reference a Concept -->
+    <xs:keyref name="SenseSignifiedRef" refer="ConceptKey">
+      <xs:selector xpath="SenseLayer/Sense"/>
+      <xs:field xpath="@signified"/>
+    </xs:keyref>
+
+    <!-- Keyref: Gloss.definiendum must reference a Concept -->
+    <xs:keyref name="GlossDefiniendumRef" refer="ConceptKey">
+      <xs:selector xpath="GlossLayer/Gloss"/>
+      <xs:field xpath="@definiendum"/>
+    </xs:keyref>
+
+    <!-- Keyref: AnnotatedToken.sense must reference a Sense -->
+    <xs:keyref name="AnnotatedTokenSenseRef" refer="SenseKey">
+      <xs:selector xpath="ExampleLayer/Example/AnnotatedToken"/>
+      <xs:field xpath="@sense"/>
+    </xs:keyref>
+
+    <!-- Keyref: WordformRelation source/target must reference Wordforms -->
+    <xs:keyref name="WordformRelationSourceRef" refer="WordformKey">
+      <xs:selector xpath="WordformRelationLayer/WordformRelation"/>
+      <xs:field xpath="@source"/>
+    </xs:keyref>
+
+    <xs:keyref name="WordformRelationTargetRef" refer="WordformKey">
+      <xs:selector xpath="WordformRelationLayer/WordformRelation"/>
+      <xs:field xpath="@target"/>
+    </xs:keyref>
+
+    <!-- Keyref: SenseRelation source/target must reference Senses -->
+    <xs:keyref name="SenseRelationSourceRef" refer="SenseKey">
+      <xs:selector xpath="SenseRelationLayer/SenseRelation"/>
+      <xs:field xpath="@source"/>
+    </xs:keyref>
+
+    <xs:keyref name="SenseRelationTargetRef" refer="SenseKey">
+      <xs:selector xpath="SenseRelationLayer/SenseRelation"/>
+      <xs:field xpath="@target"/>
+    </xs:keyref>
+
+    <!-- Keyref: ConceptRelation source/target must reference Concepts -->
+    <xs:keyref name="ConceptRelationSourceRef" refer="ConceptKey">
+      <xs:selector xpath="ConceptRelationLayer/ConceptRelation"/>
+      <xs:field xpath="@source"/>
+    </xs:keyref>
+
+    <xs:keyref name="ConceptRelationTargetRef" refer="ConceptKey">
+      <xs:selector xpath="ConceptRelationLayer/ConceptRelation"/>
+      <xs:field xpath="@target"/>
+    </xs:keyref>
+
+  </xs:element>
+
+  <!-- Concept Layer: Contains all concept entries -->
+  <xs:element name="ConceptLayer">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="Concept" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- Concept: Represents an abstract concept with part-of-speech -->
+  <xs:element name="Concept">
+    <xs:complexType>
+      <xs:attribute name="id" type="xs:ID" use="required"/>
+      <xs:attribute name="pos" type="xs:string" use="required"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- Wordform Layer: Contains all wordform entries (written or spoken) -->
+  <xs:element name="WordformLayer">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="Wordform" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- Define a named type for Wordform -->
+  <xs:complexType name="WordformType">
+    <xs:attribute name="id" type="xs:ID" use="required"/>
+    <xs:attribute name="form" type="xs:string" use="required"/>
+    <xs:attribute name="language" type="xs:string" use="required"/>
+  </xs:complexType>
+
+  <!-- Abstract Wordform element - serves as substitution group head -->
+  <!-- This element cannot be instantiated; only WrittenWordform or SpokenWordform -->
+  <xs:element name="Wordform" type="WordformType" abstract="true"/>
+
+  <!-- WrittenWordform: Concrete implementation -->
+  <xs:element name="WrittenWordform" type="WordformType" substitutionGroup="Wordform"/>
+
+  <!-- SpokenWordform: Concrete implementation with additional 'variety' attribute -->
+  <xs:element name="SpokenWordform" substitutionGroup="Wordform">
+    <xs:complexType>
+      <xs:complexContent>
+        <xs:extension base="WordformType">
+          <xs:attribute name="variety" type="xs:string" use="optional"/>
+        </xs:extension>
+      </xs:complexContent>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- Sense Layer: Contains all sense entries -->
+  <!-- SenseLayer depends on ConceptLayer and WordformLayer -->
+  <xs:element name="SenseLayer">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="Sense" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <!-- Dependencies: Sense links Wordforms to Concepts -->
+      <xs:attribute name="requiresConceptLayer" type="xs:string" use="optional"/>
+      <xs:attribute name="requiresWordformLayer" type="xs:string" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- Sense: Represents a word sense, linking wordforms to concepts -->
+  <!-- The signifier attribute references a Wordform (either written or spoken) -->
+  <!-- The signified attribute references a Concept -->
+  <xs:element name="Sense">
+    <xs:complexType>
+      <xs:attribute name="id" type="xs:ID" use="required"/>
+      <xs:attribute name="signifier" type="xs:string" use="required"/>
+      <xs:attribute name="signified" type="xs:string" use="required"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- Gloss Layer: Contains all gloss/definition entries -->
+  <!-- GlossLayer depends on ConceptLayer -->
+  <xs:element name="GlossLayer">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="Gloss" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <!-- Dependencies: Gloss provides definitions for Concepts -->
+      <xs:attribute name="requiresConceptLayer" type="xs:string" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- Gloss: Provides definitions for concepts -->
+  <!-- The definiendum attribute references a Concept -->
+  <xs:element name="Gloss">
+    <xs:complexType>
+      <xs:attribute name="definition" type="xs:string" use="required"/>
+      <xs:attribute name="definiendum" type="xs:string" use="required"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- Example Layer: Contains usage examples -->
+  <!-- ExampleLayer depends on SenseLayer (and transitively on Wordform and Concept) -->
+  <xs:element name="ExampleLayer">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="Example" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <!-- Dependencies: Examples annotate tokens with Sense references -->
+      <xs:attribute name="requiresSenseLayer" type="xs:string" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- Example: Usage example with inline annotated tokens -->
+  <!-- Contains mixed content: text with embedded AnnotatedToken elements -->
+  <xs:element name="Example">
+    <xs:complexType mixed="true">
+      <xs:choice minOccurs="0" maxOccurs="unbounded">
+        <xs:element ref="AnnotatedToken"/>
+      </xs:choice>
+      <xs:attribute name="id" type="xs:ID" use="required"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- AnnotatedToken: Marks a word or phrase in an example that references a sense -->
+  <xs:element name="AnnotatedToken">
+    <xs:complexType>
+      <xs:simpleContent>
+        <xs:extension base="xs:string">
+          <xs:attribute name="sense" type="xs:string" use="required"/>
+        </xs:extension>
+      </xs:simpleContent>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- WordformRelation Layer: Contains relationships between wordforms -->
+  <!-- WordformRelationLayer depends on WordformLayer -->
+  <xs:element name="WordformRelationLayer">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="WordformRelation" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <!-- Dependencies: Relations connect Wordforms -->
+      <xs:attribute name="requiresWordformLayer" type="xs:string" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- WordformRelation: Represents a relation between two wordforms -->
+  <!-- Source and target both reference Wordform entries (either type) -->
+  <xs:element name="WordformRelation">
+    <xs:complexType>
+      <xs:attribute name="relationType" type="xs:string" use="required"/>
+      <xs:attribute name="source" type="xs:string" use="required"/>
+      <xs:attribute name="target" type="xs:string" use="required"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- SenseRelation Layer: Contains relationships between senses -->
+  <!-- SenseRelationLayer depends on SenseLayer -->
+  <xs:element name="SenseRelationLayer">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="SenseRelation" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <!-- Dependencies: Relations connect Senses -->
+      <xs:attribute name="requiresSenseLayer" type="xs:string" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- SenseRelation: Represents a relation between two senses -->
+  <!-- Source and target both reference Sense entries -->
+  <xs:element name="SenseRelation">
+    <xs:complexType>
+      <xs:attribute name="relationType" type="xs:string" use="required"/>
+      <xs:attribute name="source" type="xs:string" use="required"/>
+      <xs:attribute name="target" type="xs:string" use="required"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- ConceptRelation Layer: Contains relationships between concepts -->
+  <!-- ConceptRelationLayer depends on ConceptLayer -->
+  <xs:element name="ConceptRelationLayer">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="ConceptRelation" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+      <!-- Dependencies: Relations connect Concepts -->
+      <xs:attribute name="requiresConceptLayer" type="xs:string" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- ConceptRelation: Represents a relation between two concepts -->
+  <!-- Source and target both reference Concept entries -->
+  <xs:element name="ConceptRelation">
+    <xs:complexType>
+      <xs:attribute name="relationType" type="xs:string" use="required"/>
+      <xs:attribute name="source" type="xs:string" use="required"/>
+      <xs:attribute name="target" type="xs:string" use="required"/>
+    </xs:complexType>
+  </xs:element>
+
+</xs:schema>

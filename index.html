@@ -1,0 +1,759 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cygnet</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🦢</text></svg>">
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect } = React;
+
+        function DictionaryBrowser() {
+            const [manifest, setManifest] = useState(null);
+            const [loadedLetters, setLoadedLetters] = useState({});
+            const [loadedConcepts, setLoadedConcepts] = useState({});
+            const [loading, setLoading] = useState(true);
+            const [error, setError] = useState(null);
+            const [searchTerm, setSearchTerm] = useState('');
+            const [currentSearch, setCurrentSearch] = useState('');
+            const [languageFilter, setLanguageFilter] = useState(new Set());
+            const [posFilter, setPosFilter] = useState(new Set());
+            const [selectedConcept, setSelectedConcept] = useState(null);
+            const [view, setView] = useState('search');
+            const [loadingResults, setLoadingResults] = useState(false);
+            const [loadingConcepts, setLoadingConcepts] = useState(new Set());
+            const [activeTab, setActiveTab] = useState('browser');
+            const isPopStateRef = React.useRef(false);
+            const isInitialLoadRef = React.useRef(true);  // Add this line
+            const [langCodes, setLangCodes] = useState({});
+
+            const getLangName = (langCode) => {
+                return langCodes[langCode] || langCode.toUpperCase();
+            };
+
+            // Update URL when search or filters change (but not on initial load)
+            useEffect(() => {
+                // Don't update URL until manifest is loaded
+                if (!manifest) return;
+
+                // Don't push to history on initial load
+                if (isInitialLoadRef.current) {
+                    isInitialLoadRef.current = false;
+                    return;
+                }
+
+                // Don't push to history if we're responding to a popstate event
+                if (isPopStateRef.current) {
+                    isPopStateRef.current = false;
+                    return;
+                }
+
+                let newUrl;
+                if (activeTab === 'python') {
+                    newUrl = '#/python';
+                } else if (activeTab === 'data') {
+                    newUrl = '#/data';
+                } else if (activeTab === 'about') {
+                    newUrl = '#/about';
+                } else if (view === 'search') {
+                    const params = new URLSearchParams();
+                    if (currentSearch) params.set('q', currentSearch);
+                    if (languageFilter.size > 0) params.set('lang', Array.from(languageFilter).join(','));
+                    if (posFilter.size > 0) params.set('pos', Array.from(posFilter).join(','));
+
+                    const queryString = params.toString();
+                    newUrl = queryString ? '#/search?' + queryString : '#/search';
+                } else if (view === 'concept' && selectedConcept) {
+                    const params = new URLSearchParams();
+                    params.set('concept', selectedConcept);
+                    newUrl = '#/search?' + params.toString();
+                }
+
+                // Only push if URL actually changed
+                if (newUrl && newUrl !== window.location.hash) {
+                    window.history.pushState({}, '', newUrl);
+                }
+            }, [view, currentSearch, languageFilter, posFilter, selectedConcept, manifest, activeTab]);
+
+            // Handle browser back/forward buttons
+            useEffect(() => {
+                const handlePopState = () => {
+                    isPopStateRef.current = true;
+
+                    const hash = window.location.hash.slice(1); // Remove the #
+                    const [path, queryString] = hash.split('?');
+
+                    // Determine initial tab from path
+                    if (path === '/python') {
+                        setActiveTab('python');
+                    } else if (path === '/data') {
+                        setActiveTab('data');
+                    } else if (path === '/about') {
+                        setActiveTab('about');
+                    } else {
+                        // We're on a browser tab route (empty, '/', or '/search')
+                        setActiveTab('browser');
+
+                        // Continue with search/concept logic ONLY for browser tab
+
+                        const params = new URLSearchParams(queryString || '');
+                        const urlSearch = params.get('q');
+                        const urlLang = params.get('lang') ? new Set(params.get('lang').split(',')) : new Set();
+                        const urlPos = params.get('pos') ? new Set(params.get('pos').split(',')) : new Set();
+                        const urlConcept = params.get('concept');
+
+                        setLanguageFilter(urlLang);
+                        setPosFilter(urlPos);
+
+                        if (urlConcept) {
+                            setSelectedConcept(urlConcept);
+                            setView('concept');
+                        } else {
+                            setView('search');
+                            setSelectedConcept(null);
+                            if (urlSearch) {
+                                setSearchTerm(urlSearch);
+                                setCurrentSearch(urlSearch);
+                                performSearchWithFilters(urlSearch, urlLang, urlPos);
+                            } else {
+                                setSearchTerm('');
+                                setCurrentSearch('');
+                            }
+                        }
+                    }
+                };
+                window.addEventListener('popstate', handlePopState);
+                return () => window.removeEventListener('popstate', handlePopState);
+            }, [manifest, loadedLetters]);
+
+            useEffect(() => {
+                const loadManifest = async () => {
+                    try {
+                        const response = await fetch('website_data/manifest.json');
+                        if (!response.ok) {
+                            throw new Error('Failed to load manifest: ' + response.statusText);
+                        }
+                        const data = await response.json();
+                        setManifest(data);
+
+                        // Load language codes
+                        const langResponse = await fetch('website_data/lang_codes.json');
+                        const langData = await langResponse.json();
+                        setLangCodes(langData);
+
+                        // Load state from URL after manifest is loaded
+                        const hash = window.location.hash.slice(1); // Remove the #
+                        const [path, queryString] = hash.split('?');
+
+                        // Determine initial tab from path
+                        if (path === '/python') {
+                            setActiveTab('python');
+                        } else if (path === '/data') {
+                            setActiveTab('data');
+                        } else if (path === '/about') {
+                            setActiveTab('about');
+                        } else {
+                            // We're on a browser tab route (empty, '/', or '/search')
+                            setActiveTab('browser');
+
+                            // Continue with search/concept logic for browser tab
+                            const params = new URLSearchParams(queryString || '');
+                            const urlSearch = params.get('q');
+                            const urlLang = params.get('lang') ? new Set(params.get('lang').split(',')) : new Set();
+                            const urlPos = params.get('pos') ? new Set(params.get('pos').split(',')) : new Set();
+                            const urlConcept = params.get('concept');
+
+                            // Set filters first (these are synchronous for display purposes)
+                            setLanguageFilter(urlLang);
+                            setPosFilter(urlPos);
+
+                            if (urlConcept) {
+                                setSelectedConcept(urlConcept);
+                                setView('concept');
+                            } else if (urlSearch) {
+                                // Set search state
+                                setSearchTerm(urlSearch);
+                                setCurrentSearch(urlSearch);
+                                setView('search');
+
+                                // Perform the actual data loading - inline version
+                                setLoadingResults(true);
+
+                                const firstLetter = urlSearch[0] ? urlSearch[0].toLowerCase() : '_';
+                                const first = firstLetter.match(/[a-z]/) ? firstLetter : '_';
+                                const langFilter = urlLang.size === 0 ? null : urlLang;
+
+                                const lettersToLoad = [];
+
+                                if (langFilter) {
+                                    for (const l of langFilter) {
+                                        const key = first + '_' + l;
+                                        if (data.letters[first] && data.letters[first][l]) {
+                                            lettersToLoad.push({letter: first, lang: l, key: key});
+                                        }
+                                    }
+                                } else {
+                                    if (data.letters[first]) {
+                                        for (const l of Object.keys(data.letters[first])) {
+                                            const key = first + '_' + l;
+                                            lettersToLoad.push({letter: first, lang: l, key: key});
+                                        }
+                                    }
+                                }
+
+                                const newLetterData = {};
+                                for (const item of lettersToLoad) {
+                                    try {
+                                        const letterResponse = await fetch('website_data/letters/' + item.letter + '_' + item.lang + '.json');
+                                        if (letterResponse.ok) {
+                                            const letterData = await letterResponse.json();
+                                            newLetterData[item.key] = letterData.wordforms;
+                                        }
+                                    } catch (err) {
+                                        console.error('Error loading letter chunk ' + item.key + ':', err);
+                                    }
+                                }
+
+                                if (Object.keys(newLetterData).length > 0) {
+                                    setLoadedLetters(newLetterData);
+                                }
+
+                                setLoadingResults(false);
+                            }
+                        }
+
+                        setLoading(false);
+                    } catch (err) {
+                        setError(err.message);
+                        setLoading(false);
+                    }
+                };
+                loadManifest();
+            }, []);
+
+            const getFirstLetter = (word) => {
+                if (!word) return '_';
+                const first = word[0].toLowerCase();
+                // Accept any letter from any script, not just a-z
+                return /\p{L}/u.test(first) ? first : '_';
+            };
+
+            const performSearchWithFilters = async (term, lang, pos) => {
+                if (!term.trim() || !manifest) return;
+
+                setLoadingResults(true);
+
+                const firstLetter = getFirstLetter(term);
+                const langFilter = lang.size === 0 ? null : lang;
+
+                const lettersToLoad = [];
+
+                if (langFilter) {
+                    for (const l of langFilter) {
+                        const key = firstLetter + '_' + l;
+                        if (!loadedLetters[key] && manifest.letters[firstLetter] && manifest.letters[firstLetter][l]) {
+                            lettersToLoad.push({ letter: firstLetter, lang: l, key: key });
+                        }
+                    }
+                } else {
+                    if (manifest.letters[firstLetter]) {
+                        for (const l of Object.keys(manifest.letters[firstLetter])) {
+                            const key = firstLetter + '_' + l;
+                            if (!loadedLetters[key]) {
+                                lettersToLoad.push({ letter: firstLetter, lang: l, key: key });
+                            }
+                        }
+                    }
+                }
+
+                const newLetterData = {};
+                for (const item of lettersToLoad) {
+                    try {
+                        const response = await fetch('website_data/letters/' + item.letter + '_' + item.lang + '.json');
+                        if (response.ok) {
+                            const data = await response.json();
+                            newLetterData[item.key] = data.wordforms;
+                        }
+                    } catch (err) {
+                        console.error('Error loading letter chunk ' + item.key + ':', err);
+                    }
+                }
+
+                if (Object.keys(newLetterData).length > 0) {
+                    setLoadedLetters(prev => ({ ...prev, ...newLetterData }));
+                }
+
+                setLoadingResults(false);
+            };
+
+            const performSearchWithTerm = async (term) => {
+                await performSearchWithFilters(term, languageFilter, posFilter);
+            };
+
+
+            const performSearch = async () => {
+                if (!searchTerm.trim() || !manifest) return;
+                setCurrentSearch(searchTerm.trim());
+                await performSearchWithTerm(searchTerm.trim());
+            };
+
+            const handleKeyPress = (e) => {
+                if (e.key === 'Enter') {
+                    performSearch();
+                }
+            };
+
+            const getFilteredWordforms = () => {
+                if (!currentSearch) return [];
+
+                const wordforms = [];
+                for (const letterWordforms of Object.values(loadedLetters)) {
+                    wordforms.push(...letterWordforms);
+                }
+
+                return wordforms.filter(wordform => {
+                    const matchesSearch = wordform.form.toLowerCase() === currentSearch.toLowerCase();
+                    const matchesLanguage = languageFilter.size === 0 || languageFilter.has(wordform.language);
+                    return matchesSearch && matchesLanguage;
+                });
+            };
+
+            const loadConcept = async (conceptId) => {
+                if (loadedConcepts[conceptId]) {
+                    return loadedConcepts[conceptId];
+                }
+
+                setLoadingConcepts(prev => new Set([...prev, conceptId]));
+
+                try {
+                    const response = await fetch('website_data/concepts/' + conceptId + '.json');
+                    if (!response.ok) {
+                        throw new Error('Failed to load concept');
+                    }
+                    const conceptData = await response.json();
+                    setLoadedConcepts(prev => ({ ...prev, [conceptId]: conceptData }));
+                    setLoadingConcepts(prev => {
+                        const next = new Set(prev);
+                        next.delete(conceptId);
+                        return next;
+                    });
+                    return conceptData;
+                } catch (err) {
+                    console.error('Error loading concept:', err);
+                    setLoadingConcepts(prev => {
+                        const next = new Set(prev);
+                        next.delete(conceptId);
+                        return next;
+                    });
+                    return null;
+                }
+            };
+
+            const handleConceptClick = async (conceptId) => {
+                setSelectedConcept(conceptId);
+                setView('concept');
+                await loadConcept(conceptId);
+            };
+
+            const handleWordformClick = (form) => {
+                setSearchTerm(form);
+                setCurrentSearch(form);
+                setView('search');
+                performSearchWithTerm(form);
+            };
+
+            const handleSynonymClick = (form) => {
+                setSearchTerm(form);
+                setView('search');
+                setCurrentSearch(form);
+                setTimeout(() => performSearchWithTerm(form), 0);
+            };
+
+            const handleBackToSearch = () => {
+                setView('search');
+                setSelectedConcept(null);
+            };
+
+            const renderExample = (example) => {
+                return example.tokens.map((token, idx) => {
+                    if (typeof token === 'string') {
+                        return <span key={idx}>{token}</span>;
+                    } else {
+                        return <strong key={idx}>{token.text}</strong>;
+                    }
+                });
+            };
+
+            const allPosValues = ['noun', 'verb', 'adj', 'adv'];
+
+
+            if (loading) {
+                return (
+                    <div className="min-h-screen bg-white flex items-center justify-center">
+                        <p className="text-gray-600">Loading dictionary...</p>
+                    </div>
+                );
+            }
+
+            if (error) {
+                return (
+                    <div className="min-h-screen bg-white flex items-center justify-center p-4">
+                        <div className="max-w-md">
+                            <h2 className="font-bold text-xl mb-2">Error Loading Dictionary</h2>
+                            <p className="mb-4">{error}</p>
+                            <p className="text-sm text-gray-600">
+                                Make sure the data structure exists. Run the Python script to generate it.
+                            </p>
+                        </div>
+                    </div>
+                );
+            }
+
+            if (!manifest) return null;
+
+            const filteredWordforms = getFilteredWordforms();
+
+            // Group senses by concept for search results
+            const sensesByConceptPos = {};
+            filteredWordforms.forEach(wordform => {
+                wordform.senses.forEach(sense => {
+                    const matchesPos = posFilter.size === 0 || posFilter.has(sense.concept_pos.toLowerCase());
+                    if (matchesPos) {
+                        const key = sense.concept_id + '_' + sense.concept_pos;
+                        if (!sensesByConceptPos[key]) {
+                            sensesByConceptPos[key] = {
+                                conceptId: sense.concept_id,
+                                pos: sense.concept_pos.toLowerCase(),
+                                senseIds: new Set()
+                            };
+                        }
+                        sensesByConceptPos[key].senseIds.add(sense.id);
+                    }
+                });
+            });
+
+            // Auto-load all concepts for search results - directly in render
+            if (view === 'search' && currentSearch) {
+                Object.values(sensesByConceptPos).forEach(group => {
+                    if (!loadedConcepts[group.conceptId] && !loadingConcepts.has(group.conceptId)) {
+                        loadConcept(group.conceptId);
+                    }
+                });
+            }
+
+            // Auto-load concept when viewing concept page - directly in render
+            if (view === 'concept' && selectedConcept && !loadedConcepts[selectedConcept] && !loadingConcepts.has(selectedConcept)) {
+                loadConcept(selectedConcept);
+            }
+
+            return (
+                <div className="min-h-screen bg-gray-50"><header className="bg-white border-b border-gray-200 sticky top-0 z-10">
+                    <div className="max-w-4xl mx-auto px-4 py-3">
+                        <div className="flex items-center justify-between">
+                            <div>
+                                <h1 className="text-2xl font-bold text-gray-800">🦢 Cygnet</h1>
+                                <p className="text-sm text-gray-600 mt-1">An Open Multilingual Wordnet project</p>
+                            </div>
+                            <nav className="flex gap-4">
+                                <button
+                                    onClick={() => setActiveTab('browser')}
+                                    className={`px-3 py-1 rounded ${activeTab === 'browser' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'}`}
+                                >
+                                    Browser
+                                </button>
+                                <button
+                                    onClick={() => setActiveTab('python')}
+                                    className={`px-3 py-1 rounded ${activeTab === 'python' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'}`}
+                                >
+                                    Python
+                                </button>
+                                <button
+                                    onClick={() => setActiveTab('data')}
+                                    className={`px-3 py-1 rounded ${activeTab === 'data' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'}`}
+                                >
+                                    Data
+                                </button>
+                                <button
+                                    onClick={() => setActiveTab('about')}
+                                    className={`px-3 py-1 rounded ${activeTab === 'about' ? 'bg-blue-100 text-blue-700' : 'text-gray-600 hover:bg-gray-100'}`}
+                                >
+                                    About
+                                </button>
+                            </nav>
+                        </div>
+                    </div>
+                </header>
+
+                <main className="max-w-4xl mx-auto px-4 pt-6 pb-4">
+                    {activeTab === 'browser' ? (
+                        <div>
+                            {view === 'search' ? (
+                        <div>
+                            <div className="mb-8">
+                                <input
+                                    type="text"
+                                    placeholder="Enter a word and press Enter"
+                                    value={searchTerm}
+                                    onChange={(e) => setSearchTerm(e.target.value)}
+                                    onKeyPress={handleKeyPress}
+                                    className="w-full px-3 py-2 border border-gray-300 rounded"
+                                />
+                                {(currentSearch || languageFilter.size > 0 || posFilter.size > 0) && (
+                                    <div className="mt-4 space-y-4">
+
+                                    <div className="mt-4 space-y-4">
+                                        <div>
+                                            <div className="flex items-center gap-3 mb-2">
+                                                <label className="text-sm text-gray-600 font-semibold">Filter by Language</label>
+                                                <button
+                                                    onClick={() => setLanguageFilter(new Set())}
+                                                    className="text-xs text-blue-600 hover:underline"
+                                                >
+                                                    reset
+                                                </button>
+                                            </div>
+                                            <div className="flex flex-wrap gap-3">
+                                                {Array.from(manifest.languages).sort((a, b) => getLangName(a).localeCompare(getLangName(b))).map(lang => (
+                                                    <label key={lang} className="flex items-center gap-1 cursor-pointer">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={languageFilter.has(lang)}
+                                                            onChange={(e) => {
+                                                                const newSet = new Set(languageFilter);
+                                                                if (e.target.checked) {
+                                                                    newSet.add(lang);
+                                                                } else {
+                                                                    newSet.delete(lang);
+                                                                }
+                                                                setLanguageFilter(newSet);
+                                                            }}
+                                                            className="cursor-pointer"
+                                                        />
+                                                        <span className="text-sm">{getLangName(lang)}</span>
+                                                    </label>
+                                                ))}
+                                            </div>
+                                        </div>
+
+                                        <div>
+                                            <div className="flex items-center gap-3 mb-2">
+                                                <label className="text-sm text-gray-600 font-semibold">Filter by POS</label>
+                                                <button
+                                                    onClick={() => setPosFilter(new Set())}
+                                                    className="text-xs text-blue-600 hover:underline"
+                                                >
+                                                    reset
+                                                </button>
+                                            </div>
+                                            <div className="flex flex-wrap gap-3">
+                                                {allPosValues.map(pos => (
+                                                    <label key={pos} className="flex items-center gap-1 cursor-pointer">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={posFilter.has(pos)}
+                                                            onChange={(e) => {
+                                                                const newSet = new Set(posFilter);
+                                                                if (e.target.checked) {
+                                                                    newSet.add(pos);
+                                                                } else {
+                                                                    newSet.delete(pos);
+                                                                }
+                                                                setPosFilter(newSet);
+                                                            }}
+                                                            className="cursor-pointer"
+                                                        />
+                                                        <span className="text-sm">{pos}</span>
+                                                    </label>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>
+                                )}
+                                </div>
+
+                                {loadingResults && (
+                                    <p className="text-gray-600 mb-4">Loading...</p>
+                                )}
+
+                                {!currentSearch ? (
+                                    <p className="text-gray-500">Enter a word and press Enter to search</p>
+                                ) : Object.keys(sensesByConceptPos).length === 0 ? (
+                                    <p className="text-gray-500">No results found</p>
+                                ) : (
+                                    <div className="space-y-2">
+                                        {Object.values(sensesByConceptPos).map((group, idx) => {
+                                            const concept = loadedConcepts[group.conceptId];
+                                            const isLoading = loadingConcepts.has(group.conceptId);
+
+                                            return (
+                                                <div key={group.conceptId + '_' + group.pos} className="border-b border-gray-200 pb-2">
+                                                    <div>
+                                                        <span className="text-gray-600">{idx + 1}.</span>{' '}
+                                                        <span className="text-gray-500 italic">{group.pos}</span>{' '}
+                                                        {isLoading && <span className="text-gray-400">Loading...</span>}
+                                                        {concept && (
+                                                            <>
+                                                                <span>{concept.gloss}</span>
+                                                                {' '}
+                                                                <button
+                                                                    onClick={() => handleConceptClick(group.conceptId)}
+                                                                    className="text-blue-600 underline text-sm"
+                                                                >
+                                                                    [view concept]
+                                                                </button>
+                                                            </>
+                                                        )}
+                                                    </div>
+
+{concept && (
+    <div className="ml-6 mt-1 text-sm">
+        <span className="text-gray-600">Lemmas: </span>
+        {(() => {
+            // Group synonyms by language
+            const synonymsByLang = {};
+            concept.senses.forEach(s => {
+                const lang = s.wordform.language;
+                if (!synonymsByLang[lang]) {
+                    synonymsByLang[lang] = [];
+                }
+                synonymsByLang[lang].push(s);
+            });
+
+            return Object.entries(synonymsByLang)
+                .sort(([a], [b]) => getLangName(a).localeCompare(getLangName(b)))
+                .map(([lang, senses], langIdx, langArr) => (
+                    <span key={lang}>
+                        <span className="font-semibold text-gray-700">{getLangName(lang)}:</span>
+                        {' '}
+                        {senses.map((s, i, arr) => (
+                            <span key={s.id}>
+                                <button
+                                    onClick={() => handleSynonymClick(s.wordform.form)}
+                                    className="text-blue-600 hover:underline"
+                                >
+                                    {s.wordform.form}
+                                </button>
+                                {i < arr.length - 1 && ', '}
+                            </span>
+                        ))}
+                        {langIdx < langArr.length - 1 && '; '}
+                    </span>
+                ));
+        })()}
+    </div>
+)}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+                        ) : (
+                            <div>
+                                <button
+                                    onClick={handleBackToSearch}
+                                    className="mb-4 text-blue-600 hover:underline"
+                                >
+                                    ← Back to search
+                                </button>
+
+{loadedConcepts[selectedConcept] ? (
+<div>
+    <div className="mb-3">
+        <p className="mb-4">
+                                            <span className="text-gray-600 italic">{loadedConcepts[selectedConcept].pos.toLowerCase()}</span>
+                                            {' '}
+                                            {loadedConcepts[selectedConcept].gloss}
+                                        </p>
+                                    </div>
+
+<h3 className="font-bold mb-2 text-base">All forms expressing this concept:</h3>
+
+                                    {(() => {
+                                        // Group senses by language
+                                        const sensesByLanguage = {};
+                                        loadedConcepts[selectedConcept].senses.forEach(senseData => {
+                                            const lang = senseData.wordform.language;
+                                            if (!sensesByLanguage[lang]) {
+                                                sensesByLanguage[lang] = [];
+                                            }
+                                            sensesByLanguage[lang].push(senseData);
+                                        });
+
+return Object.entries(sensesByLanguage).sort(([a], [b]) => getLangName(a).localeCompare(getLangName(b))).map(([lang, senses]) => (
+    <div key={lang} className="mb-2">
+        <h4 className="font-semibold text-gray-700 mb-0.5 text-sm">{getLangName(lang)}</h4>
+                                                <div className="space-y-0.5 ml-1">
+                                                    {senses.map(senseData => (
+                                                        <div key={senseData.id}>
+<button
+    onClick={() => handleWordformClick(senseData.wordform.form)}
+    className="font-semibold text-blue-600 hover:underline text-sm"
+>
+                                                                {senseData.wordform.form}
+                                                            </button>
+
+{senseData.examples && senseData.examples.length > 0 && (
+    <span className="text-xs text-gray-600 ml-1">
+        {senseData.examples.map((example, idx) => (
+                                                                        <span key={example.id || idx}>
+                                                                            {idx > 0 && '; '}
+                                                                            "{renderExample(example)}"
+                                                                        </span>
+                                                                    ))}
+                                                                </span>
+                                                            )}
+                                                        </div>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        ));
+                                    })()}
+                                </div>
+                                ) : (
+                                    <div className="text-gray-600">Loading concept...</div>
+                                )}
+                            </div>
+                        )}
+                            </div>
+                        ) : activeTab === 'python' ? (
+                            <div>
+                                <h2 className="text-xl font-bold mb-4">Python Module</h2>
+                                <p className="text-gray-600">Python module documentation coming soon.</p>
+                            </div>
+                        ) : activeTab === 'data' ? (
+                            <div>
+                                <h2 className="text-xl font-bold mb-4">Data Download</h2>
+                                <p className="text-gray-600">Data download options coming soon.</p>
+                            </div>
+                        ) : (
+                            <div>
+                                <h2 className="text-xl font-bold mb-4">About</h2>
+                                <p className="text-gray-600">Information about Cygnet coming soon.</p>
+                            </div>
+                        )}
+                    </main>
+
+                    <footer className="mt-12 py-4 px-4">
+                        <div className="max-w-4xl mx-auto border-t border-gray-300 pt-4 text-center text-sm text-gray-500">
+                            Cygnet
+                        </div>
+                    </footer>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<DictionaryBrowser />);
+    </script>
+</body>
+</html>
