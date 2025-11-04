@@ -27,7 +27,7 @@ def extract_language_codes(xml_file):
     language_codes = set()
 
     # Find the WordformLayer element
-    wordform_layer = root.find('WordformLayer')
+    wordform_layer = root.find('LexemeLayer')
 
     if wordform_layer is not None:
         # Iterate through all wordform elements (WrittenWordform and SpokenWordform)

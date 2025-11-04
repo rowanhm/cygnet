@@ -1,0 +1,44 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<RelationMetadata>
+  <SenseRelations>
+    <RelationType name="sense_relation" is_abstract="true">
+      <RelationType name="antonym" is_abstract="false" inverse="antonym"/>
+      <RelationType name="synonymy" is_abstract="false" inverse="synonymy"/>
+      <RelationType name="derivation" is_abstract="false" inverse="derivation_of"/>
+      <RelationType name="pertainym" is_abstract="false" inverse="pertainym_of"/>
+      <RelationType name="participle" is_abstract="false" inverse="participle_of"/>
+    </RelationType>
+  </SenseRelations>
+  <ConceptRelations>
+    <RelationType name="concept_relation" is_abstract="true">
+      <RelationType name="constitutive_relation" is_abstract="true">
+        <RelationType name="hypernym" is_abstract="true" inverse="hyponym">
+          <RelationType name="class_hypernym" is_abstract="false" inverse="class_hyponym"/>
+          <RelationType name="instance_hypernym" is_abstract="false" inverse="instance_hyponym"/>
+        </RelationType>
+        <RelationType name="meronym" is_abstract="true" inverse="holonym">
+          <RelationType name="member_meronym" is_abstract="false" inverse="member_holonym"/>
+          <RelationType name="part_meronym" is_abstract="false" inverse="part_holonym"/>
+          <RelationType name="substance_meronym" is_abstract="false" inverse="substance_holonym"/>
+        </RelationType>
+        <RelationType name="opposite" is_abstract="false" inverse="opposite"/>
+      </RelationType>
+      <RelationType name="inferential_relation" is_abstract="true">
+        <RelationType name="causes" is_abstract="false" inverse="caused_by"/>
+        <RelationType name="entails" is_abstract="false" inverse="entailed_by"/>
+      </RelationType>
+      <RelationType name="role_relation" is_abstract="true">
+        <RelationType name="agent_of_action" is_abstract="false" inverse="action_of_agent"/>
+        <RelationType name="patient_of_action" is_abstract="false" inverse="action_of_patient"/>
+        <RelationType name="result_of_action" is_abstract="false" inverse="action_of_result"/>
+        <RelationType name="instrument_of_agent" is_abstract="false" inverse="action_of_instrument"/>
+        <RelationType name="instrument_of_action" is_abstract="false" inverse="action_of_instrument"/>
+        <RelationType name="result_of_agent" is_abstract="false" inverse="agent_of_result"/>
+        <RelationType name="patient_of_agent" is_abstract="false" inverse="agent_of_patient"/>
+        <RelationType name="instrument_of_patient" is_abstract="false" inverse="patient_of_instrument"/>
+        <RelationType name="instrument_of_result" is_abstract="false" inverse="result_of_instrument"/>
+        <RelationType name="patient_of_result" is_abstract="false" inverse="result_of_patient"/>
+      </RelationType>
+    </RelationType>
+  </ConceptRelations>
+</RelationMetadata>

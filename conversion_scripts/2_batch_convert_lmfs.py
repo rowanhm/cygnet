@@ -3,10 +3,9 @@
 Batch convert GlobalWordNet XML files to Cygnet XML format.
 """
 
-import os
-import sys
 from pathlib import Path
-from omw_conversion.convert_wn_to_xml import GWNToCygnetConverter
+
+from cyg.converters import WordNetToCygnetConverter
 
 
 def should_skip_file(filepath):
@@ -67,8 +66,7 @@ def collect_xml_files(raw_wns_dir):
     return sorted(xml_files)
 
 
-def batch_convert(raw_wns_dir='raw_wns', output_dir='cygnets_presynth',
-                  skip_examples=False, xsd_file=None):
+def batch_convert(cili_file, raw_wns_dir='raw_wns', output_dir='cygnets_presynth'):
     """
     Batch convert all GWN XML files to Cygnet format.
 
@@ -97,17 +95,35 @@ def batch_convert(raw_wns_dir='raw_wns', output_dir='cygnets_presynth',
     error_count = 0
     skipped_count = 0
 
+    # Reorder - find oewn and move it to the start
+    oewn = next((t for t in xml_files if 'english-wordnet' in str(t)), None)
+    if oewn:
+        xml_files.remove(oewn)
+        xml_files.insert(0, oewn)
+
     for i, xml_file in enumerate(xml_files, 1):
         print(f"[{i}/{len(xml_files)}] Processing {xml_file.name}...")
 
         try:
-            # Create converter and read metadata first
-            converter = GWNToCygnetConverter()
+
+            if i == 1:
+                # English !
+                converter = WordNetToCygnetConverter(cili_path=cili_file, skip_cili_defns=True)
+            else:
+                converter = WordNetToCygnetConverter(cili_path=cili_file, relations_path=str(output_path/"oewn-2024.xml"),
+                                                     skip_cili_defns=False)
+
+            # Read metadata first (without converting)
             root, tree = converter.read_metadata(str(xml_file))
 
             # Get metadata
             lexicon_id = converter.lexicon_id
             lexicon_version = converter.lexicon_version
+
+            if i == 1:
+                assert lexicon_id == 'oewn'
+            else:
+                assert lexicon_id != 'oewn'
 
             if lexicon_id is None or lexicon_version is None:
                 print(f"  ✗ Skipping {xml_file.name} (could not read metadata)")
@@ -117,7 +133,6 @@ def batch_convert(raw_wns_dir='raw_wns', output_dir='cygnets_presynth',
             # Construct proper output filename: id-version.xml
             output_filename = f"{lexicon_id}-{lexicon_version}.xml"
             output_file = output_path / output_filename
-            mapping_file = output_path / f"{lexicon_id}-{lexicon_version}_mapping.json"
 
             # Check if output already exists
             if output_file.exists():
@@ -125,16 +140,11 @@ def batch_convert(raw_wns_dir='raw_wns', output_dir='cygnets_presynth',
                 skipped_count += 1
                 continue
 
-            # Now process the file
-            converter.process_file(
-                root,
-                str(output_file),
-                skip_examples=skip_examples,
-                xsd_file=xsd_file
-            )
-
-            print(f"  ✓ Successfully converted to {output_filename}")
-            success_count += 1
+            # Now convert and save (using the already-parsed tree)
+            print(f"  Converting {xml_file.name}...")
+            converter.convert_from_tree(root)
+            converter.save(str(output_file))
+            print(f"  ✓ Converted to {output_filename}")
 
         except Exception as e:
             print(f"  ✗ Error converting {xml_file.name}: {e}")
@@ -170,14 +180,8 @@ def main():
         help='Directory to save converted files (default: cygnets_presynth)'
     )
     parser.add_argument(
-        '--skip-examples',
-        action='store_true',
-        help='Skip processing the example layer'
-    )
-    parser.add_argument(
-        '--xsd-file',
-        default=None,
-        help='XSD file path for validation (optional)'
+        '--cili-file',
+        default='bin/cygnets_presynth/cili-1.0.xml',
     )
 
     args = parser.parse_args()
@@ -185,8 +189,7 @@ def main():
     batch_convert(
         raw_wns_dir=args.raw_wns_dir,
         output_dir=args.output_dir,
-        skip_examples=args.skip_examples,
-        xsd_file=args.xsd_file
+        cili_file=args.cili_file
     )
 
 
