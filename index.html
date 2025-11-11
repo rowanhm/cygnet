@@ -1174,9 +1174,9 @@
                                         let cachedSize = cache.get(cacheKey);
 
                                         if (!cachedSize) {
-                                            const fontSize = d.isCenter ? 15 : 14;
-                                            const avgCharWidth = fontSize * 0.5;
-                                            const posWidth = d.pos.length * avgCharWidth * 1.1;
+                                            const fontSize = 13;
+                                            const avgCharWidth = fontSize * 0.6;
+                                            const posWidth = d.pos.length * avgCharWidth * 0.85;
 
                                             const maxWidth = 250;
                                             const words = d.definition.split(' ');
@@ -1192,7 +1192,7 @@
                                                     currentWidth = wordWidth;
                                                 } else {
                                                     currentLine.push(word);
-                                                    currentWidth += wordWidth + (avgCharWidth * 0.3);
+                                                    currentWidth += wordWidth + (avgCharWidth * 0.4);
                                                 }
                                             });
                                             if (currentLine.length > 0) {
@@ -1201,7 +1201,17 @@
 
                                             const padding = 12;
                                             const lineHeight = d.isCenter ? 18 : 17;
-                                            const boxWidth = maxWidth + padding * 2;
+
+                                            // Calculate actual width needed for each line
+                                            let actualMaxWidth = posWidth + 4;  // Start with first line (pos + first word)
+                                            lines.forEach((line, idx) => {
+                                                const lineWidth = idx === 0
+                                                    ? posWidth + 4 + (line.length - d.pos.length) * avgCharWidth
+                                                    : line.length * avgCharWidth;
+                                                actualMaxWidth = Math.max(actualMaxWidth, lineWidth);
+                                            });
+
+                                            const boxWidth = Math.min(actualMaxWidth + padding * 2, maxWidth + padding * 2);
                                             const boxHeight = lines.length * lineHeight + padding * 2;
 
                                             cachedSize = { boxWidth, boxHeight, lineHeight, posWidth, lines };
@@ -1220,16 +1230,20 @@
                                         const textGroup = nodeGroup.append('g')
                                             .attr('transform', `translate(12, 12)`);
                                         const firstLineY = lineHeight * 0.75;
-                                        textGroup.append('text')
+                                        const posText = textGroup.append('text')
                                             .attr('x', 0)
                                             .attr('y', firstLineY)
                                             .attr('font-size', d.isCenter ? 15 : 14)
                                             .attr('font-style', 'italic')
                                             .attr('text-anchor', 'start')
                                             .text(d.pos);
+
+                                        // Get actual rendered width of POS text
+                                        const actualPosWidth = posText.node().getBBox().width;
+
                                         if (lines.length > 0) {
                                             textGroup.append('text')
-                                                .attr('x', posWidth + 4)
+                                                .attr('x', actualPosWidth + 4)
                                                 .attr('y', firstLineY)
                                                 .attr('font-size', d.isCenter ? 15 : 14)
                                                 .attr('text-anchor', 'start')

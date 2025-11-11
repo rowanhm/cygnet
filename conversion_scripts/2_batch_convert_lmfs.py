@@ -23,7 +23,7 @@ def should_skip_file(filepath):
     if stem.endswith('.xml'):
         stem = stem[:-4]
 
-    skip_names = ['omw-en', 'omw-ja', 'omw-id', 'omw-da', 'omw-zsm']
+    skip_names = ['omw-en', 'omw-ja', 'omw-id', 'omw-zsm']
     return stem in skip_names
 
 
