@@ -291,6 +291,7 @@
             const [languageFilter, setLanguageFilter] = useState(new Set());
             const [posFilter, setPosFilter] = useState(new Set());
             const [senseFilter, setSenseFilter] = useState(null);
+            const [filtersOpen, setFiltersOpen] = useState(false);
             const [selectedConcept, setSelectedConcept] = useState(null);
             const [selectedSense, setSelectedSense] = useState(null);
             const [view, setView] = useState('search');
@@ -1218,69 +1219,92 @@
                                 {view === 'search' && (
                                     <div className="mb-8">
                                         {!senseFilter && (
-                                            <input type="text" value={searchTerm}
-                                                onChange={(e) => setSearchTerm(e.target.value)}
-                                                onKeyPress={handleKeyPress}
-                                                placeholder="Search for a word..."
-                                                className="w-full px-3 py-2 border border-gray-300 rounded"
-                                            />
+                                            <div className="flex items-center gap-3">
+                                                <input type="text" value={searchTerm}
+                                                    onChange={(e) => setSearchTerm(e.target.value)}
+                                                    onKeyPress={handleKeyPress}
+                                                    placeholder="Search for a word..."
+                                                    className="flex-grow px-3 py-2 border border-gray-300 rounded"
+                                                />
+                                                {currentSearch && allLanguages.length > 0 && (
+                                                    <button onClick={() => setFiltersOpen(!filtersOpen)}
+                                                        className="text-sm text-gray-500 hover:text-gray-700 flex items-center gap-1 whitespace-nowrap">
+                                                        <span>{filtersOpen ? '▼' : '▶'}</span>
+                                                        <span>Filters</span>
+                                                        {(languageFilter.size > 0 || posFilter.size > 0 || definitionLanguage !== 'en') && (
+                                                            <span className="text-blue-600 text-xs ml-1">(active)</span>
+                                                        )}
+                                                    </button>
+                                                )}
+                                            </div>
                                         )}
 
-                                        {!senseFilter && currentSearch && allLanguages.length > 0 && (
-                                            <div className="mt-4 space-y-4">
-                                                <div>
-                                                    <label className="text-sm text-gray-600 font-semibold block mb-2">Definition Language</label>
+                                        {!senseFilter && currentSearch && allLanguages.length > 0 && filtersOpen && (
+                                            <div className="mt-2 space-y-3 pl-4 border-l-2 border-gray-200">
+                                                <div className="flex items-center gap-2">
+                                                    <label className="text-sm text-gray-600">Definitions in</label>
                                                     <select value={definitionLanguage}
                                                         onChange={(e) => setDefinitionLanguage(e.target.value)}
-                                                        className="px-3 py-1 border border-gray-300 rounded text-sm"
+                                                        className="px-2 py-0.5 border border-gray-300 rounded text-sm"
                                                     >
-                                                        <option value="en">English (default)</option>
+                                                        <option value="en">English</option>
                                                         {allLanguages.filter(l => l !== 'en')
                                                             .sort((a, b) => getLangName(a).localeCompare(getLangName(b)))
-                                                            .map(lang => <option key={lang} value={lang} title={getLangFullName(lang)}>{getLangName(lang)}</option>)}
+                                                            .map(lang => <option key={lang} value={lang}>{getLangFullName(lang)}</option>)}
                                                     </select>
+                                                    {definitionLanguage !== 'en' && (
+                                                        <span className="text-xs text-gray-400">falls back to English</span>
+                                                    )}
                                                 </div>
 
-                                                <div className="flex items-center gap-3 mb-2">
-                                                    <label className="text-sm text-gray-600 font-semibold">Filter by Language</label>
-                                                    <button onClick={() => { setLanguageFilter(new Set()); performSearch(currentSearch, new Set(), posFilter, senseFilter); }}
-                                                        className="text-xs text-blue-600 hover:underline">Clear</button>
-                                                </div>
-                                                <div className="flex flex-wrap gap-3">
-                                                    {allLanguages.sort((a, b) => getLangName(a).localeCompare(getLangName(b))).map(lang => (
-                                                        <label key={lang} className="flex items-center gap-1 cursor-pointer">
-                                                            <input type="checkbox" checked={languageFilter.has(lang)}
-                                                                onChange={() => {
-                                                                    const nf = new Set(languageFilter);
-                                                                    nf.has(lang) ? nf.delete(lang) : nf.add(lang);
-                                                                    setLanguageFilter(nf);
-                                                                    setSenseFilter(null);
-                                                                    performSearch(currentSearch, nf, posFilter, null);
-                                                                }} className="cursor-pointer" />
-                                                            <span className="text-sm" title={getLangFullName(lang)}>{getLangName(lang)}</span>
-                                                        </label>
-                                                    ))}
+                                                <div>
+                                                    <div className="flex items-center gap-2 mb-1">
+                                                        <span className="text-sm text-gray-600">Language</span>
+                                                        {languageFilter.size > 0 && (
+                                                            <button onClick={() => { setLanguageFilter(new Set()); performSearch(currentSearch, new Set(), posFilter, senseFilter); }}
+                                                                className="text-xs text-blue-600 hover:underline">clear</button>
+                                                        )}
+                                                    </div>
+                                                    <div className="flex flex-wrap gap-2">
+                                                        {allLanguages.sort((a, b) => getLangName(a).localeCompare(getLangName(b))).map(lang => (
+                                                            <label key={lang} className="flex items-center gap-1 cursor-pointer">
+                                                                <input type="checkbox" checked={languageFilter.has(lang)}
+                                                                    onChange={() => {
+                                                                        const nf = new Set(languageFilter);
+                                                                        nf.has(lang) ? nf.delete(lang) : nf.add(lang);
+                                                                        setLanguageFilter(nf);
+                                                                        setSenseFilter(null);
+                                                                        performSearch(currentSearch, nf, posFilter, null);
+                                                                    }} className="cursor-pointer" />
+                                                                <span className="text-xs">{getLangFullName(lang)}</span>
+                                                            </label>
+                                                        ))}
+                                                    </div>
                                                 </div>
 
-                                                <div className="flex items-center gap-3 mb-2">
-                                                    <label className="text-sm text-gray-600 font-semibold">Filter by Part of Speech</label>
-                                                    <button onClick={() => { setPosFilter(new Set()); performSearch(currentSearch, languageFilter, new Set(), senseFilter); }}
-                                                        className="text-xs text-blue-600 hover:underline">Clear</button>
-                                                </div>
-                                                <div className="flex flex-wrap gap-3">
-                                                    {allPosValues.map(pos => (
-                                                        <label key={pos} className="flex items-center gap-1 cursor-pointer">
-                                                            <input type="checkbox" checked={posFilter.has(pos)}
-                                                                onChange={() => {
-                                                                    const nf = new Set(posFilter);
-                                                                    nf.has(pos) ? nf.delete(pos) : nf.add(pos);
-                                                                    setPosFilter(nf);
-                                                                    setSenseFilter(null);
-                                                                    performSearch(currentSearch, languageFilter, nf, null);
-                                                                }} className="cursor-pointer" />
-                                                            <span className="text-sm">{getPosName(pos, true)}</span>
-                                                        </label>
-                                                    ))}
+                                                <div>
+                                                    <div className="flex items-center gap-2 mb-1">
+                                                        <span className="text-sm text-gray-600">Part of Speech</span>
+                                                        {posFilter.size > 0 && (
+                                                            <button onClick={() => { setPosFilter(new Set()); performSearch(currentSearch, languageFilter, new Set(), senseFilter); }}
+                                                                className="text-xs text-blue-600 hover:underline">clear</button>
+                                                        )}
+                                                    </div>
+                                                    <div className="flex flex-wrap gap-2">
+                                                        {allPosValues.map(pos => (
+                                                            <label key={pos} className="flex items-center gap-1 cursor-pointer">
+                                                                <input type="checkbox" checked={posFilter.has(pos)}
+                                                                    onChange={() => {
+                                                                        const nf = new Set(posFilter);
+                                                                        nf.has(pos) ? nf.delete(pos) : nf.add(pos);
+                                                                        setPosFilter(nf);
+                                                                        setSenseFilter(null);
+                                                                        performSearch(currentSearch, languageFilter, nf, null);
+                                                                    }} className="cursor-pointer" />
+                                                                <span className="text-xs">{getPosName(pos, true)}</span>
+                                                            </label>
+                                                        ))}
+                                                    </div>
                                                 </div>
                                             </div>
                                         )}
