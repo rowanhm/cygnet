@@ -9,6 +9,7 @@ This script:
 """
 
 import json
+from pathlib import Path
 from lxml import etree as ET
 from nltk.corpus import wordnet as wn
 
@@ -456,7 +457,10 @@ def process_definitions(json_file, pwn_to_gloss, sense_mapping):
 
 def main():
     # File paths
-    oewn_file = 'bin/cygnets_presynth/oewn-2024.xml'
+    oewn_matches = sorted(Path('bin/cygnets_presynth').glob('oewn-*.xml'))
+    if not oewn_matches:
+        raise FileNotFoundError("OEWN output not found in bin/cygnets_presynth/")
+    oewn_file = str(oewn_matches[0])
     cili_file = 'bin/cygnets_presynth/cili-1.0.xml'
     json_file = 'bin/concepts_to_definitions.json'
     output_file = 'bin/cygnets_presynth/cili-1.0.xml'

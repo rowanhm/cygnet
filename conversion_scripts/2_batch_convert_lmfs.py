@@ -53,13 +53,12 @@ def collect_xml_files(raw_wns_dir):
         if not should_skip_file(filepath):
             xml_files.append(filepath)
 
-    # Process omw-1.4/*/*.xml files
-    omw_pattern = raw_wns_path / 'omw-1.4' / '*' / '*.xml'
-    for filepath in raw_wns_path.glob('omw-1.4/*/*.xml'):
+    # Process omw-*/*/*.xml files (supports any OMW version)
+    for filepath in raw_wns_path.glob('omw-*/*/*.xml'):
         if not should_skip_file(filepath):
             xml_files.append(filepath)
 
-    for filepath in raw_wns_path.glob('omw-1.4/*/*.xml.gz'):
+    for filepath in raw_wns_path.glob('omw-*/*/*.xml.gz'):
         if not should_skip_file(filepath):
             xml_files.append(filepath)
 
@@ -94,6 +93,7 @@ def batch_convert(cili_file, raw_wns_dir='raw_wns', output_dir='cygnets_presynth
     success_count = 0
     error_count = 0
     skipped_count = 0
+    oewn_relations_path = None
 
     # Reorder - find oewn and move it to the start
     oewn = next((t for t in xml_files if 'english-wordnet' in str(t)), None)
@@ -110,7 +110,14 @@ def batch_convert(cili_file, raw_wns_dir='raw_wns', output_dir='cygnets_presynth
                 # English !
                 converter = WordNetToCygnetConverter(cili_path=cili_file, skip_cili_defns=True)
             else:
-                converter = WordNetToCygnetConverter(cili_path=cili_file, relations_path=str(output_path/"oewn-2024.xml"),
+                if oewn_relations_path is None:
+                    oewn_matches = sorted(output_path.glob('oewn-*.xml'))
+                    if not oewn_matches:
+                        print(f"  ✗ Skipping {xml_file.name} (OEWN output not found)")
+                        error_count += 1
+                        continue
+                    oewn_relations_path = str(oewn_matches[0])
+                converter = WordNetToCygnetConverter(cili_path=cili_file, relations_path=oewn_relations_path,
                                                      skip_cili_defns=False)
 
             # Read metadata first (without converting)
@@ -145,6 +152,8 @@ def batch_convert(cili_file, raw_wns_dir='raw_wns', output_dir='cygnets_presynth
             converter.convert_from_tree(root)
             converter.save(str(output_file))
             print(f"  ✓ Converted to {output_filename}")
+            if i == 1:
+                oewn_relations_path = str(output_file)
 
         except Exception as e:
             print(f"  ✗ Error converting {xml_file.name}: {e}")

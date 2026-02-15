@@ -382,8 +382,18 @@ class WordNetToCygnetConverter:
             self.nlp = spacy.load(model_name, disable=["parser", "ner", "tok2vec"])
         except OSError:
             print(f"  Downloading spaCy model '{model_name}'...")
+            import shutil
             import subprocess
-            subprocess.run([sys.executable, "-m", "spacy", "download", model_name])
+            from spacy.cli.download import get_compatibility, get_version
+            version = get_version(model_name, get_compatibility())
+            wheel_url = (
+                f"https://github.com/explosion/spacy-models/releases/download/"
+                f"{model_name}-{version}/{model_name}-{version}-py3-none-any.whl"
+            )
+            if shutil.which('uv'):
+                subprocess.run(['uv', 'pip', 'install', wheel_url], check=True)
+            else:
+                subprocess.run([sys.executable, '-m', 'pip', 'install', wheel_url], check=True)
             self.nlp = spacy.load(model_name, disable=["parser", "ner", "tok2vec"])
 
         # Initialize NLTK lemmatizer
