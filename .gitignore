@@ -8,6 +8,7 @@ website_data/senses/
 website_data/prefix_lookups/
 website_data/prefix_map.json
 website_data/lang_codes.json
+web/cygnet.db
 
 # Python / uv
 .venv/
