@@ -487,6 +487,13 @@ def main():
     size_mb = db_path.stat().st_size / (1024 * 1024)
     print(f"\n✓ Database written to {db_path} ({size_mb:.1f} MB)")
 
+    # Gzip for web delivery
+    import subprocess
+    gz_path = str(db_path) + '.gz'
+    subprocess.run(['gzip', '-k', '-9', '-f', str(db_path)], check=True)
+    gz_mb = Path(gz_path).stat().st_size / (1024 * 1024)
+    print(f"✓ Compressed to {gz_path} ({gz_mb:.1f} MB)")
+
 
 if __name__ == '__main__':
     main()
