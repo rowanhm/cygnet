@@ -12,6 +12,8 @@
 #                      (requires WordNet 3.0 GlossTag corpus in bin/WordNet-3.0/)
 #   --with-translate   Machine-translate non-English glosses to English
 #                      (requires argostranslate; very slow)
+#   --with-xml         Also generate and validate cygnet.xml and cygnet_small.xml
+#                      (requires xmlstarlet; slow — 678 MB output)
 #   --download-only    Download data without running the build
 #   --build-only       Run the build without downloading (assumes data exists)
 #
@@ -29,6 +31,7 @@ CILI_PWN_MAP_URL="https://raw.githubusercontent.com/globalwordnet/cili/master/il
 # --- Parse arguments ---
 WITH_GLOSSTAG=false
 WITH_TRANSLATE=false
+WITH_XML=false
 DO_DOWNLOAD=true
 DO_BUILD=true
 
@@ -36,6 +39,7 @@ for arg in "$@"; do
     case "$arg" in
         --with-glosstag)  WITH_GLOSSTAG=true ;;
         --with-translate) WITH_TRANSLATE=true ;;
+        --with-xml)       WITH_XML=true ;;
         --download-only)  DO_BUILD=false ;;
         --build-only)     DO_DOWNLOAD=false ;;
         --help|-h)
@@ -205,25 +209,11 @@ if $DO_BUILD; then
     uv run python conversion_scripts/6_synthesise.py
     echo
 
-    echo "=== Step 7: Validate ==="
-    uv run python conversion_scripts/7_validity_checker.py
-    echo
-
-    echo "=== Step 8a: Compress ==="
-    uv run python conversion_scripts/8_compress.py
-    echo
-
-    echo "=== Step 8b: Website conversion ==="
-    uv run python conversion_scripts/8_website_conversion.py
-    echo
-
-    echo "=== Step 9: Language codes ==="
-    uv run python conversion_scripts/9_lang_codes.py
-    echo
-    
-    echo "=== Step 10: Make sql for web ==="
-    uv run python conversion_scripts/10_sqlite_conversion.py
-    echo
+    if $WITH_XML; then
+        echo "=== Step 7: Generate and validate XML ==="
+        uv run python conversion_scripts/7_validate_and_export.py
+        echo
+    fi
 
     echo "=== Tests ==="
     uv run pytest tests/ -v
@@ -231,10 +221,12 @@ if $DO_BUILD; then
 
     echo "=== Build complete! ==="
     echo "Output:"
-    echo "  cygnet.xml        - Full merged resource"
-    echo "  cygnet_small.xml  - Without provenance metadata"
-    echo "  web/cygnet.db         - sql db for web interface"
+    echo "  web/cygnet.db         - SQLite database for web interface"
     echo "  web/cygnet.db.gz      - compressed"
     echo "  web/provenance.db     - provenance database"
     echo "  web/provenance.db.gz  - compressed"
+    if $WITH_XML; then
+        echo "  cygnet.xml            - full merged resource (with provenance)"
+        echo "  cygnet_small.xml      - without provenance metadata"
+    fi
 fi
