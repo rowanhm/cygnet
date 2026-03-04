@@ -151,12 +151,17 @@
 
             // Get lemma (rank 0) and variants (rank > 0)
             const forms = cachedExec(`
-                SELECT form, rank FROM forms
+                SELECT rowid, form, rank FROM forms
                 WHERE entry_rowid = (SELECT entry_rowid FROM senses WHERE rowid = ?)
                 ORDER BY rank
             `, [senseRowid]);
-            const lemma = forms.find(f => f.rank === 0)?.form || '';
+            const lemmaForm = forms.find(f => f.rank === 0);
+            const lemma = lemmaForm?.form || '';
             const variants = forms.filter(f => f.rank > 0).map(f => f.form);
+            const pronunciations = lemmaForm ? cachedExec(`
+                SELECT variety, pronunciation FROM pronunciations
+                WHERE form_rowid = ? ORDER BY rowid
+            `, [lemmaForm.rowid]) : [];
 
             // Get examples with annotations
             const examples = cachedExec(`
@@ -208,6 +213,7 @@
                 id: r.id.toString(),
                 l: lemma,
                 v: variants,
+                p: pronunciations.length > 0 ? pronunciations : undefined,
                 lg: _langRowidToCode[r.lang_rowid],
                 c: r.c,
                 ind: r.ind,
@@ -1007,6 +1013,19 @@
                 );
             };
 
+            const renderPronunciations = (prons) => {
+                if (!prons || prons.length === 0) return null;
+                return (
+                    <span className="text-xs text-gray-400 font-normal">
+                        {prons.map((p, i) => (
+                            <span key={i} className="mr-2">
+                                /{p.pronunciation}/{p.variety && <sup className="ml-0.5">{p.variety}</sup>}
+                            </span>
+                        ))}
+                    </span>
+                );
+            };
+
             // Concept graph
             const relationsMap = relatedConcepts[selectedConcept];
             let hasRelationsToDisplay = false;
@@ -1619,6 +1638,7 @@
                                                                                                             <div className="flex-grow flex items-start gap-2">
                                                                                                                 <div className="flex-shrink-0 py-1">
                                                                                                                     <strong className="text-base">{sense.l}<sub>{sense.ind}</sub></strong>
+                                                                                                                    {' '}{renderPronunciations(sense.p)}
                                                                                                                 </div>
                                                                                                                 <div onClick={(e) => { e.stopPropagation(); handleConceptClick(group.conceptId); }}
                                                                                                                     className="bg-white px-2 py-1 rounded border border-gray-300 hover:border-blue-400 hover:shadow-sm transition-all text-left cursor-pointer flex-shrink concept-inner">
@@ -1811,7 +1831,16 @@
                                         <div>
                                             <button onClick={handleBackToSearch} className="mb-4 text-blue-600 hover:underline">← Back to search</button>
                                             <div className="mb-4">
-                                                <h2 className="text-2xl font-bold mb-2">{sense.l}</h2>
+                                                <h2 className="text-2xl font-bold mb-1">{sense.l}</h2>
+                                                {sense.p && sense.p.length > 0 && (
+                                                    <div className="text-base text-gray-500 mb-1">
+                                                        {sense.p.map((p, i) => (
+                                                            <span key={i} className="mr-3">
+                                                                /{p.pronunciation}/{p.variety && <span className="text-xs ml-1">{p.variety}</span>}
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                )}
                                                 <p className="text-gray-600" title={getLangFullName(sense.lg)}>Language: {getLangName(sense.lg)}</p>
                                             </div>
                                             {sense.v && sense.v.length > 0 && (
