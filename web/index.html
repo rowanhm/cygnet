@@ -1019,13 +1019,13 @@
             const renderPronunciations = (prons) => {
                 if (!showPronunciation || !prons || prons.length === 0) return null;
                 return (
-                    <span className="text-xs text-gray-400 font-normal">
+                    <div className="text-xs text-gray-500 font-normal mt-0.5">
                         {prons.map((p, i) => (
-                            <span key={i} className="mr-2">
+                            <span key={i} className="mr-3">
                                 /{p.pronunciation}/{p.variety && <sup className="ml-0.5">{p.variety}</sup>}
                             </span>
                         ))}
-                    </span>
+                    </div>
                 );
             };
 
@@ -1653,7 +1653,7 @@
                                                                                                             <div className="flex-grow flex items-start gap-2">
                                                                                                                 <div className="flex-shrink-0 py-1">
                                                                                                                     <strong className="text-base">{sense.l}<sub>{sense.ind}</sub></strong>
-                                                                                                                    {' '}{renderPronunciations(sense.p)}
+                                                                                                                    {renderPronunciations(sense.p)}
                                                                                                                 </div>
                                                                                                                 <div onClick={(e) => { e.stopPropagation(); handleConceptClick(group.conceptId); }}
                                                                                                                     className="bg-white px-2 py-1 rounded border border-gray-300 hover:border-blue-400 hover:shadow-sm transition-all text-left cursor-pointer flex-shrink concept-inner">
