@@ -301,18 +301,38 @@
         function getConceptLabel(synsetRowid, lang = 'en') {
             const key = `${synsetRowid}-${lang}`;
             if (_labelCache[key] !== undefined) return _labelCache[key];
-            const query = `
+            const queryLang = `
                 SELECT f.form FROM senses s
                 JOIN entries e ON s.entry_rowid = e.rowid
                 JOIN forms f ON f.entry_rowid = e.rowid
                 JOIN languages l ON e.language_rowid = l.rowid
                 WHERE s.synset_rowid = ? AND l.code = ? AND f.rank = 0
                 ORDER BY s.sense_index LIMIT 1`;
-            let rows = cachedExec(query, [synsetRowid, lang]);
-            if (rows.length === 0 && lang !== 'en') rows = cachedExec(query, [synsetRowid, 'en']);
-            const label = rows[0]?.form || null;
-            _labelCache[key] = label;
-            return label;
+            const queryAny = `
+                SELECT f.form, l.code as lang_code FROM senses s
+                JOIN entries e ON s.entry_rowid = e.rowid
+                JOIN forms f ON f.entry_rowid = e.rowid
+                JOIN languages l ON e.language_rowid = l.rowid
+                WHERE s.synset_rowid = ? AND f.rank = 0
+                ORDER BY s.sense_index LIMIT 1`;
+            let rows = cachedExec(queryLang, [synsetRowid, lang]);
+            if (rows.length > 0) {
+                const result = { form: rows[0].form, lang };
+                _labelCache[key] = result;
+                return result;
+            }
+            if (lang !== 'en') {
+                rows = cachedExec(queryLang, [synsetRowid, 'en']);
+                if (rows.length > 0) {
+                    const result = { form: rows[0].form, lang: 'en' };
+                    _labelCache[key] = result;
+                    return result;
+                }
+            }
+            rows = cachedExec(queryAny, [synsetRowid]);
+            const result = rows[0]?.form ? { form: rows[0].form, lang: rows[0].lang_code } : null;
+            _labelCache[key] = result;
+            return result;
         }
 
         function getAllLanguages() {
@@ -437,6 +457,9 @@
             const [collapsedSections, setCollapsedSections] = useState({});
             const [synonymsCollapsed, setSynonymsCollapsed] = useState({});
             const [settingsOpen, setSettingsOpen] = useState(false);
+            const [graphVisible, setGraphVisible] = useState(() =>
+                localStorage.getItem('graphVisible') !== 'false'
+            );
             const [definitionLanguage, setDefinitionLanguage] = useState(() =>
                 localStorage.getItem('definitionLanguage') || 'en'
             );
@@ -1160,8 +1183,11 @@
                         if (nodesMap.has(id)) return;
                         const concept = loadedConcepts[id] || loadConcept(id);
                         const pos = getPosName(concept?.oc || '', true);
-                        const label = getConceptLabel(parseInt(id), definitionLanguage)
-                            || concept?.d?.[definitionLanguage] || concept?.d?.en || '';
+                        const lblInfo = getConceptLabel(parseInt(id), definitionLanguage);
+                        const labelBase = lblInfo?.form || concept?.d?.[definitionLanguage] || concept?.d?.en || '';
+                        const labelActualLang = lblInfo?.lang;
+                        const label = (labelActualLang && labelActualLang !== definitionLanguage)
+                            ? `${labelBase} [${labelActualLang}]` : labelBase;
                         nodesMap.set(id, {
                             id, label, pos,
                             isCenter: id === selectedConcept
@@ -1512,6 +1538,12 @@
                                                             <span className="text-sm text-gray-600">Show pronunciation</span>
                                                         </label>
                                                         <label className="flex items-center gap-2 cursor-pointer">
+                                                            <input type="checkbox" checked={graphVisible}
+                                                                onChange={e => { setGraphVisible(e.target.checked); localStorage.setItem('graphVisible', e.target.checked); }}
+                                                                className="cursor-pointer" />
+                                                            <span className="text-sm text-gray-600">Show relations graph</span>
+                                                        </label>
+                                                        <label className="flex items-center gap-2 cursor-pointer">
                                                             <input type="checkbox" checked={showProvenance}
                                                                 onChange={e => {
                                                                     setShowProvenance(e.target.checked);
@@ -1664,7 +1696,9 @@
                                                                                                         }
                                                                                                     });
                                                                                                 }
-                                                                                                const definition = concept?.d?.[definitionLanguage] || concept?.d?.en || '';
+                                                                                                const defEntry = concept?.d ? (concept.d[definitionLanguage] ? [concept.d[definitionLanguage], definitionLanguage] : concept.d.en ? [concept.d.en, 'en'] : Object.entries(concept.d)[0] ? [Object.values(concept.d)[0], Object.keys(concept.d)[0]] : ['', null]) : ['', null];
+                                                                                                const [definition, defLang] = defEntry;
+                                                                                                const defIsFallback = defLang && defLang !== definitionLanguage;
                                                                                                 const hasExtra = !!(sense.v?.length || synonyms.length || sense.ex?.length);
                                                                                                 return (
                                                                                                     <div key={sense.id}
@@ -1679,9 +1713,9 @@
                                                                                                                 <div onClick={(e) => { e.stopPropagation(); handleConceptClick(group.conceptId); }}
                                                                                                                     className="bg-white px-2 py-1 rounded border border-gray-300 hover:border-blue-400 hover:shadow-sm transition-all text-left cursor-pointer flex-shrink concept-inner">
                                                                                                                     <span className="text-base">
-                                                                                                                        {(() => { const lbl = getConceptLabel(parseInt(group.conceptId), definitionLanguage); return lbl ? <><span className="font-semibold text-gray-800">{lbl}</span>{' · '}</> : null; })()}
+                                                                                                                        {(() => { const li = getConceptLabel(parseInt(group.conceptId), definitionLanguage); return li ? <><span className="font-semibold text-gray-800">{li.form}</span>{li.lang !== definitionLanguage && <span className="text-xs text-gray-400 ml-0.5">[{li.lang}]</span>}{' · '}</> : null; })()}
                                                                                                                         <span className="text-gray-600 italic">{getPosName(pos)}.</span>
-                                                                                                                        {' '}<span className="text-gray-700">{definition}</span>
+                                                                                                                        {' '}<span className="text-gray-700">{definition}</span>{defIsFallback && <span className="text-xs text-gray-400 ml-1">[{defLang}]</span>}
                                                                                                                     </span>
                                                                                                                 </div>
                                                                                                             </div>
@@ -1755,8 +1789,14 @@
                                         });
                                     }
 
-                                    const mainDef = concept.d?.en || '(No English definition available)';
-                                    const altDefs = concept.d ? Object.entries(concept.d).filter(([l]) => l !== 'en') : [];
+                                    const mainDefEntry = concept.d
+                                        ? (concept.d[definitionLanguage] ? [concept.d[definitionLanguage], definitionLanguage]
+                                            : concept.d.en ? [concept.d.en, 'en']
+                                            : Object.entries(concept.d)[0] || ['(No definition available)', null])
+                                        : ['(No definition available)', null];
+                                    const [mainDef, shownLang] = mainDefEntry;
+                                    const mainDefIsFallback = shownLang && shownLang !== definitionLanguage;
+                                    const altDefs = concept.d ? Object.entries(concept.d).filter(([l]) => l !== shownLang) : [];
 
                                     return (
                                         <div>
@@ -1765,7 +1805,8 @@
                                                 <p className="text-base">
                                                     <span className="text-gray-600 italic">{getPosName(concept.oc)}.</span>{' '}
                                                     {concept.da ? renderDefinitionWithLinks(mainDef, concept.da) : mainDef}
-                                                    {concept.dr?.en && renderProvenance('definitions', concept.dr.en)}
+                                                    {mainDefIsFallback && <span className="text-xs text-gray-400 ml-1">[{shownLang}]</span>}
+                                                    {concept.dr?.[shownLang] && renderProvenance('definitions', concept.dr[shownLang])}
                                                     {concept.ili && <span className="text-sm ml-2">⟪{concept.ili}⟫</span>}
                                                 </p>
                                                 {(() => {
@@ -1782,8 +1823,12 @@
 
                                             {relationsMap && hasRelationsToDisplay && (
                                                 <div className="mb-4">
-                                                    <h3 className="font-bold mb-2 text-base">Related Concepts:</h3>
-                                                    <div style={{ position: 'relative', overflow: 'hidden' }}>
+                                                    <button onClick={() => { const v = !graphVisible; setGraphVisible(v); localStorage.setItem('graphVisible', v); }}
+                                                        className="flex items-center gap-2 font-bold mb-2 text-base hover:text-blue-600 transition-colors">
+                                                        <span>{graphVisible ? '▼' : '▶'}</span>
+                                                        <span>Related Concepts</span>
+                                                    </button>
+                                                    {graphVisible && <div style={{ position: 'relative', overflow: 'hidden' }}>
                                                         <div id="concept-graph" style={{ width: '100%', height: '500px' }} />
                                                         <div className="text-sm text-gray-600 italic mt-2">Hover over a node to expand its relations.</div>
                                                         {hoveredNode && hoverMenuPosition && (
@@ -1814,13 +1859,13 @@
                                                                 </div>
                                                             </div>
                                                         )}
-                                                    </div>
+                                                    </div>}
                                                 </div>
                                             )}
 
                                             {altDefs.length > 0 && (
                                                 <div className="mb-4">
-                                                    <h3 className="font-bold mb-2 text-base">Alternative definitions:</h3>
+                                                    <h3 className="font-bold mb-2 text-base">Other definitions:</h3>
                                                     <div className="space-y-1 ml-2">
                                                         {altDefs.map(([lang, def]) => (
                                                             <div key={lang} className="text-sm">
