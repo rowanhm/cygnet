@@ -297,6 +297,24 @@
             };
         }
 
+        const _labelCache = {};
+        function getConceptLabel(synsetRowid, lang = 'en') {
+            const key = `${synsetRowid}-${lang}`;
+            if (_labelCache[key] !== undefined) return _labelCache[key];
+            const query = `
+                SELECT f.form FROM senses s
+                JOIN entries e ON s.entry_rowid = e.rowid
+                JOIN forms f ON f.entry_rowid = e.rowid
+                JOIN languages l ON e.language_rowid = l.rowid
+                WHERE s.synset_rowid = ? AND l.code = ? AND f.rank = 0
+                ORDER BY s.sense_index LIMIT 1`;
+            let rows = cachedExec(query, [synsetRowid, lang]);
+            if (rows.length === 0 && lang !== 'en') rows = cachedExec(query, [synsetRowid, 'en']);
+            const label = rows[0]?.form || null;
+            _labelCache[key] = label;
+            return label;
+        }
+
         function getAllLanguages() {
             const rows = cachedExec(`SELECT code FROM languages ORDER BY code`);
             return rows.map(r => r.code);
@@ -409,7 +427,6 @@
             const [languageFilter, setLanguageFilter] = useState(new Set());
             const [posFilter, setPosFilter] = useState(new Set());
             const [senseFilter, setSenseFilter] = useState(null);
-            const [filtersOpen, setFiltersOpen] = useState(false);
             const [selectedConcept, setSelectedConcept] = useState(null);
             const [selectedSense, setSelectedSense] = useState(null);
             const [view, setView] = useState('search');
@@ -419,6 +436,7 @@
             const [activeTab, setActiveTab] = useState('browser');
             const [collapsedSections, setCollapsedSections] = useState({});
             const [synonymsCollapsed, setSynonymsCollapsed] = useState({});
+            const [settingsOpen, setSettingsOpen] = useState(false);
             const [definitionLanguage, setDefinitionLanguage] = useState(() =>
                 localStorage.getItem('definitionLanguage') || 'en'
             );
@@ -439,6 +457,7 @@
             setHoverMenuPositionRef.current = setHoverMenuPosition;
             const menuRef = useRef(null);
             const menuInteractionRef = useRef(false);
+            const settingsRef = useRef(null);
             const hoveredNodeRef = useRef(null);
             const nodeSizeCache = useRef(new Map());
             const MAX_CACHE_SIZE = 200;
@@ -453,6 +472,16 @@
             };
 
             useEffect(() => { hoveredNodeRef.current = hoveredNode; }, [hoveredNode]);
+
+            useEffect(() => {
+                if (!settingsOpen) return;
+                const handleClick = (e) => {
+                    if (settingsRef.current && !settingsRef.current.contains(e.target))
+                        setSettingsOpen(false);
+                };
+                document.addEventListener('mousedown', handleClick);
+                return () => document.removeEventListener('mousedown', handleClick);
+            }, [settingsOpen]);
 
             // Initialize database
             useEffect(() => {
@@ -1020,6 +1049,8 @@
                 );
             };
 
+            const hasActiveSettings = definitionLanguage !== 'en' || !showPronunciation || showProvenance || languageFilter.size > 0 || posFilter.size > 0;
+
             // Concept graph
             const relationsMap = relatedConcepts[selectedConcept];
             let hasRelationsToDisplay = false;
@@ -1128,9 +1159,9 @@
                     const addNode = (id) => {
                         if (nodesMap.has(id)) return;
                         const concept = loadedConcepts[id] || loadConcept(id);
-                        const def = concept?.d?.en || '';
                         const pos = getPosName(concept?.oc || '', true);
-                        const label = def.length > 60 ? def.substring(0, 57) + '...' : def;
+                        const label = getConceptLabel(parseInt(id), definitionLanguage)
+                            || concept?.d?.[definitionLanguage] || concept?.d?.en || '';
                         nodesMap.set(id, {
                             id, label, pos,
                             isCenter: id === selectedConcept
@@ -1435,7 +1466,7 @@
                                     <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded mt-1">SQL</span>
                                 </div>
                             </div>
-                            <nav className="flex gap-3 mt-3 -mb-3">
+                            <nav className="flex items-end gap-3 mt-3 -mb-3">
                                 {['browser', 'python', 'data', 'about', 'publications', 'wordnets'].map(tab => (
                                     <button key={tab}
                                         onClick={() => setActiveTab(tab)}
@@ -1446,6 +1477,112 @@
                                         }`}
                                     >{tab.charAt(0).toUpperCase() + tab.slice(1)}</button>
                                 ))}
+                                <div className="ml-auto relative pb-0" ref={settingsRef}>
+                                    <button onClick={() => setSettingsOpen(o => !o)}
+                                        title="Settings"
+                                        className={`px-3 py-2 rounded-t-lg border-b-2 transition-colors relative ${settingsOpen ? 'bg-gray-50 border-blue-500 text-blue-700' : 'border-transparent text-gray-600 hover:text-gray-900 hover:bg-gray-50'}`}>
+                                        ⚙
+                                        {hasActiveSettings && <span className="absolute top-1.5 right-1 w-1.5 h-1.5 bg-blue-500 rounded-full" />}
+                                    </button>
+                                    {settingsOpen && (
+                                        <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded shadow-lg z-20 w-80 max-h-[80vh] overflow-y-auto">
+                                            <div className="p-4 space-y-4">
+                                                <div>
+                                                    <h4 className="font-semibold text-gray-500 mb-2 text-xs uppercase tracking-wide">General</h4>
+                                                    <div className="space-y-2 pl-1">
+                                                        <div className="flex items-center gap-2">
+                                                            <label className="text-sm text-gray-600 whitespace-nowrap">Display results in</label>
+                                                            <select value={definitionLanguage}
+                                                                onChange={(e) => setDefinitionLanguage(e.target.value)}
+                                                                className="px-2 py-0.5 border border-gray-300 rounded text-sm flex-grow min-w-0"
+                                                            >
+                                                                <option value="en">English</option>
+                                                                {allLanguages.filter(l => l !== 'en')
+                                                                    .sort((a, b) => getLangName(a).localeCompare(getLangName(b)))
+                                                                    .map(lang => <option key={lang} value={lang}>{getLangFullName(lang)}</option>)}
+                                                            </select>
+                                                        </div>
+                                                        {definitionLanguage !== 'en' && (
+                                                            <p className="text-xs text-gray-400 pl-1">Labels and definitions fall back to English if unavailable</p>
+                                                        )}
+                                                        <label className="flex items-center gap-2 cursor-pointer">
+                                                            <input type="checkbox" checked={showPronunciation}
+                                                                onChange={e => { setShowPronunciation(e.target.checked); localStorage.setItem('showPronunciation', e.target.checked); }}
+                                                                className="cursor-pointer" />
+                                                            <span className="text-sm text-gray-600">Show pronunciation</span>
+                                                        </label>
+                                                        <label className="flex items-center gap-2 cursor-pointer">
+                                                            <input type="checkbox" checked={showProvenance}
+                                                                onChange={e => {
+                                                                    setShowProvenance(e.target.checked);
+                                                                    localStorage.setItem('showProvenance', e.target.checked);
+                                                                    if (e.target.checked && !_provDb && !provLoading) loadProvenanceDb();
+                                                                }}
+                                                                className="cursor-pointer" />
+                                                            <span className="text-sm text-gray-600">Show provenance</span>
+                                                            {showProvenance && provLoading && <span className="text-xs text-gray-400 ml-1">Loading...</span>}
+                                                            {showProvenance && provError && <span className="text-xs text-red-500 ml-1">{provError}</span>}
+                                                        </label>
+                                                    </div>
+                                                </div>
+                                                <hr className="border-gray-200" />
+                                                <div>
+                                                    <h4 className="font-semibold text-gray-500 mb-2 text-xs uppercase tracking-wide">Search filters</h4>
+                                                    <div className="space-y-3 pl-1">
+                                                        <div>
+                                                            <div className="flex items-center gap-2 mb-1">
+                                                                <span className="text-sm text-gray-600">Language</span>
+                                                                {languageFilter.size > 0 && (
+                                                                    <button onClick={() => { setLanguageFilter(new Set()); if (currentSearch) performSearch(currentSearch, new Set(), posFilter, senseFilter); }}
+                                                                        className="text-xs text-blue-600 hover:underline">clear</button>
+                                                                )}
+                                                            </div>
+                                                            <div className="flex flex-wrap gap-2">
+                                                                {allLanguages.sort((a, b) => getLangName(a).localeCompare(getLangName(b))).map(lang => (
+                                                                    <label key={lang} className="flex items-center gap-1 cursor-pointer">
+                                                                        <input type="checkbox" checked={languageFilter.has(lang)}
+                                                                            onChange={() => {
+                                                                                const nf = new Set(languageFilter);
+                                                                                nf.has(lang) ? nf.delete(lang) : nf.add(lang);
+                                                                                setLanguageFilter(nf);
+                                                                                setSenseFilter(null);
+                                                                                if (currentSearch) performSearch(currentSearch, nf, posFilter, null);
+                                                                            }} className="cursor-pointer" />
+                                                                        <span className="text-xs">{getLangFullName(lang)}</span>
+                                                                    </label>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+                                                        <div>
+                                                            <div className="flex items-center gap-2 mb-1">
+                                                                <span className="text-sm text-gray-600">Part of speech</span>
+                                                                {posFilter.size > 0 && (
+                                                                    <button onClick={() => { setPosFilter(new Set()); if (currentSearch) performSearch(currentSearch, languageFilter, new Set(), senseFilter); }}
+                                                                        className="text-xs text-blue-600 hover:underline">clear</button>
+                                                                )}
+                                                            </div>
+                                                            <div className="flex flex-wrap gap-2">
+                                                                {allPosValues.map(pos => (
+                                                                    <label key={pos} className="flex items-center gap-1 cursor-pointer">
+                                                                        <input type="checkbox" checked={posFilter.has(pos)}
+                                                                            onChange={() => {
+                                                                                const nf = new Set(posFilter);
+                                                                                nf.has(pos) ? nf.delete(pos) : nf.add(pos);
+                                                                                setPosFilter(nf);
+                                                                                setSenseFilter(null);
+                                                                                if (currentSearch) performSearch(currentSearch, languageFilter, nf, null);
+                                                                            }} className="cursor-pointer" />
+                                                                        <span className="text-xs">{getPosName(pos, true)}</span>
+                                                                    </label>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
                             </nav>
                         </div>
                     </header>
@@ -1463,116 +1600,9 @@
                                                     placeholder="Search for a word..."
                                                     className="flex-grow px-3 py-2 border border-gray-300 rounded"
                                                 />
-                                                {currentSearch && allLanguages.length > 0 && (
-                                                    <button onClick={() => setFiltersOpen(!filtersOpen)}
-                                                        className="text-sm text-gray-500 hover:text-gray-700 flex items-center gap-1 whitespace-nowrap">
-                                                        <span>{filtersOpen ? '▼' : '▶'}</span>
-                                                        <span>Filters</span>
-                                                        {(languageFilter.size > 0 || posFilter.size > 0 || definitionLanguage !== 'en' || showProvenance || !showPronunciation) && (
-                                                            <span className="text-blue-600 text-xs ml-1">(active)</span>
-                                                        )}
-                                                    </button>
-                                                )}
                                             </div>
                                         )}
 
-                                        {!senseFilter && currentSearch && allLanguages.length > 0 && filtersOpen && (
-                                            <div className="mt-2 space-y-3 pl-4 border-l-2 border-gray-200">
-                                                <div className="flex items-center gap-2">
-                                                    <label className="text-sm text-gray-600">Definitions in</label>
-                                                    <select value={definitionLanguage}
-                                                        onChange={(e) => setDefinitionLanguage(e.target.value)}
-                                                        className="px-2 py-0.5 border border-gray-300 rounded text-sm"
-                                                    >
-                                                        <option value="en">English</option>
-                                                        {allLanguages.filter(l => l !== 'en')
-                                                            .sort((a, b) => getLangName(a).localeCompare(getLangName(b)))
-                                                            .map(lang => <option key={lang} value={lang}>{getLangFullName(lang)}</option>)}
-                                                    </select>
-                                                    {definitionLanguage !== 'en' && (
-                                                        <span className="text-xs text-gray-400">falls back to English</span>
-                                                    )}
-                                                </div>
-
-                                                <div>
-                                                    <div className="flex items-center gap-2 mb-1">
-                                                        <span className="text-sm text-gray-600">Language</span>
-                                                        {languageFilter.size > 0 && (
-                                                            <button onClick={() => { setLanguageFilter(new Set()); performSearch(currentSearch, new Set(), posFilter, senseFilter); }}
-                                                                className="text-xs text-blue-600 hover:underline">clear</button>
-                                                        )}
-                                                    </div>
-                                                    <div className="flex flex-wrap gap-2">
-                                                        {allLanguages.sort((a, b) => getLangName(a).localeCompare(getLangName(b))).map(lang => (
-                                                            <label key={lang} className="flex items-center gap-1 cursor-pointer">
-                                                                <input type="checkbox" checked={languageFilter.has(lang)}
-                                                                    onChange={() => {
-                                                                        const nf = new Set(languageFilter);
-                                                                        nf.has(lang) ? nf.delete(lang) : nf.add(lang);
-                                                                        setLanguageFilter(nf);
-                                                                        setSenseFilter(null);
-                                                                        performSearch(currentSearch, nf, posFilter, null);
-                                                                    }} className="cursor-pointer" />
-                                                                <span className="text-xs">{getLangFullName(lang)}</span>
-                                                            </label>
-                                                        ))}
-                                                    </div>
-                                                </div>
-
-                                                <div>
-                                                    <div className="flex items-center gap-2 mb-1">
-                                                        <span className="text-sm text-gray-600">Part of Speech</span>
-                                                        {posFilter.size > 0 && (
-                                                            <button onClick={() => { setPosFilter(new Set()); performSearch(currentSearch, languageFilter, new Set(), senseFilter); }}
-                                                                className="text-xs text-blue-600 hover:underline">clear</button>
-                                                        )}
-                                                    </div>
-                                                    <div className="flex flex-wrap gap-2">
-                                                        {allPosValues.map(pos => (
-                                                            <label key={pos} className="flex items-center gap-1 cursor-pointer">
-                                                                <input type="checkbox" checked={posFilter.has(pos)}
-                                                                    onChange={() => {
-                                                                        const nf = new Set(posFilter);
-                                                                        nf.has(pos) ? nf.delete(pos) : nf.add(pos);
-                                                                        setPosFilter(nf);
-                                                                        setSenseFilter(null);
-                                                                        performSearch(currentSearch, languageFilter, nf, null);
-                                                                    }} className="cursor-pointer" />
-                                                                <span className="text-xs">{getPosName(pos, true)}</span>
-                                                            </label>
-                                                        ))}
-                                                    </div>
-                                                </div>
-
-                                                <div className="flex items-center gap-2">
-                                                    <label className="flex items-center gap-2 cursor-pointer">
-                                                        <input type="checkbox" checked={showPronunciation}
-                                                            onChange={e => {
-                                                                const checked = e.target.checked;
-                                                                setShowPronunciation(checked);
-                                                                localStorage.setItem('showPronunciation', checked);
-                                                            }}
-                                                            className="cursor-pointer" />
-                                                        <span className="text-sm text-gray-600">Show pronunciation</span>
-                                                    </label>
-                                                </div>
-                                                <div className="flex items-center gap-2">
-                                                    <label className="flex items-center gap-2 cursor-pointer">
-                                                        <input type="checkbox" checked={showProvenance}
-                                                            onChange={e => {
-                                                                const checked = e.target.checked;
-                                                                setShowProvenance(checked);
-                                                                localStorage.setItem('showProvenance', checked);
-                                                                if (checked && !_provDb && !provLoading) loadProvenanceDb();
-                                                            }}
-                                                            className="cursor-pointer" />
-                                                        <span className="text-sm text-gray-600">Show provenance</span>
-                                                    </label>
-                                                    {showProvenance && provLoading && <span className="text-xs text-gray-400">Loading...</span>}
-                                                    {showProvenance && provError && <span className="text-xs text-red-500">{provError}</span>}
-                                                </div>
-                                            </div>
-                                        )}
 
                                         {senseFilter && (
                                             <div className="mb-4 bg-blue-50 border border-blue-200 rounded p-4">
@@ -1649,6 +1679,7 @@
                                                                                                                 <div onClick={(e) => { e.stopPropagation(); handleConceptClick(group.conceptId); }}
                                                                                                                     className="bg-white px-2 py-1 rounded border border-gray-300 hover:border-blue-400 hover:shadow-sm transition-all text-left cursor-pointer flex-shrink concept-inner">
                                                                                                                     <span className="text-base">
+                                                                                                                        {(() => { const lbl = getConceptLabel(parseInt(group.conceptId), definitionLanguage); return lbl ? <><span className="font-semibold text-gray-800">{lbl}</span>{' · '}</> : null; })()}
                                                                                                                         <span className="text-gray-600 italic">{getPosName(pos)}.</span>
                                                                                                                         {' '}<span className="text-gray-700">{definition}</span>
                                                                                                                     </span>
