@@ -299,6 +299,48 @@
             };
         }
 
+        function findPath(fromId, toId) {
+            if (fromId === toId) return [{ node: fromId, rel: null }];
+            const MAX_DEPTH = 12;
+            const visited = new Map([[fromId, { prev: null, rel: null }]]);
+            let frontierArr = [fromId];
+            let frontierSet = new Set([fromId]);
+            for (let depth = 0; depth < MAX_DEPTH && frontierArr.length > 0; depth++) {
+                const ph = frontierArr.map(() => '?').join(',');
+                const rows = cachedExec(`
+                    SELECT source_rowid as src, target_rowid as tgt, rt.type as rel
+                    FROM synset_relations sr
+                    JOIN relation_types rt ON sr.type_rowid = rt.rowid
+                    WHERE source_rowid IN (${ph}) OR target_rowid IN (${ph})
+                `, [...frontierArr, ...frontierArr]);
+                const nextArr = [];
+                const nextSet = new Set();
+                let found = false;
+                for (const {src, tgt, rel} of rows) {
+                    for (const [node, neighbor] of [[src, tgt], [tgt, src]]) {
+                        if (!frontierSet.has(node) || visited.has(neighbor)) continue;
+                        visited.set(neighbor, { prev: node, rel });
+                        if (neighbor === toId) { found = true; break; }
+                        if (!nextSet.has(neighbor)) { nextArr.push(neighbor); nextSet.add(neighbor); }
+                    }
+                    if (found) break;
+                }
+                if (found) {
+                    const path = [];
+                    let cur = toId;
+                    while (cur !== null) {
+                        const { prev, rel } = visited.get(cur);
+                        path.unshift({ node: cur, rel });
+                        cur = prev;
+                    }
+                    return path;
+                }
+                frontierArr = nextArr;
+                frontierSet = nextSet;
+            }
+            return null;
+        }
+
         const _labelCache = {};
         function getConceptLabel(synsetRowid, lang = 'en') {
             const key = `${synsetRowid}-${lang}`;
@@ -470,6 +512,10 @@
             const [hoveredNode, setHoveredNode] = useState(null);
             const [hoverMenuPosition, setHoverMenuPosition] = useState(null);
             const [selectedCategories, setSelectedCategories] = useState({});
+            const [pathTargetIli, setPathTargetIli] = useState('');
+            const [pathTargetRowid, setPathTargetRowid] = useState(null);
+            const [pathResult, setPathResult] = useState(null);
+            const [pathNotFound, setPathNotFound] = useState(false);
             const isPopStateRef = useRef(false);
             const isInitialLoadRef = useRef(true);
             const hoverTimeoutRef = useRef(null);
@@ -949,6 +995,10 @@
                 setSelectedSense(null);
                 setView('concept');
                 setSynonymsCollapsed({});
+                setPathResult(null);
+                setPathNotFound(false);
+                setPathTargetIli('');
+                setPathTargetRowid(null);
                 loadConceptWithRelations(conceptId.toString());
             };
 
@@ -1975,6 +2025,73 @@
                                                 );
                                             })()}
 
+                                            {(() => {
+                                                const fromIli = concept.ili;
+                                                if (!fromIli) return null;
+                                                const runPath = (toRowid) => {
+                                                    const fromRowid = parseInt(selectedConcept);
+                                                    const result = findPath(fromRowid, toRowid);
+                                                    setPathResult(result);
+                                                    setPathNotFound(result === null);
+                                                };
+                                                const targetLabel = pathTargetRowid ? getConceptLabel(pathTargetRowid, definitionLanguage) : null;
+                                                return (
+                                                <div className="mb-4">
+                                                    <h3 className="font-bold mb-2 text-base">Path to concept</h3>
+                                                    <div className="flex gap-2 mb-2 items-center">
+                                                        <input
+                                                            type="text"
+                                                            value={pathTargetIli}
+                                                            onChange={e => {
+                                                                const q = e.target.value.trim();
+                                                                setPathTargetIli(e.target.value);
+                                                                setPathResult(null);
+                                                                setPathNotFound(false);
+                                                                const norm = q.replace(/^cili\./, '');
+                                                                if (/^i\d+$/.test(norm)) {
+                                                                    const rows = cachedExec('SELECT rowid FROM synsets WHERE ili = ?', [norm]);
+                                                                    setPathTargetRowid(rows[0]?.rowid || null);
+                                                                } else {
+                                                                    setPathTargetRowid(null);
+                                                                }
+                                                            }}
+                                                            onKeyDown={e => { if (e.key === 'Enter' && pathTargetRowid) runPath(pathTargetRowid); }}
+                                                            placeholder={`e.g. i${fromIli?.replace(/^i/,'') || '46360'}`}
+                                                            className="w-40 border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:border-blue-400 font-mono"
+                                                        />
+                                                        {targetLabel && <span className="text-sm text-gray-600">{targetLabel.form}{targetLabel.lang !== definitionLanguage && <span className="text-xs text-gray-400 ml-1">[{targetLabel.lang}]</span>}</span>}
+                                                        {pathTargetIli && !pathTargetRowid && <span className="text-xs text-gray-400 italic">not found</span>}
+                                                        <button
+                                                            onClick={() => pathTargetRowid && runPath(pathTargetRowid)}
+                                                            disabled={!pathTargetRowid}
+                                                            className="px-3 py-1 text-sm rounded border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed">
+                                                            Find path
+                                                        </button>
+                                                    </div>
+                                                    {pathNotFound && <p className="text-sm text-gray-500 italic">No path found within 12 steps.</p>}
+                                                    {pathResult && (
+                                                        <div className="flex flex-wrap items-center gap-1 text-sm">
+                                                            {pathResult.map((step, i) => {
+                                                                const li = getConceptLabel(step.node, definitionLanguage);
+                                                                return (
+                                                                    <React.Fragment key={i}>
+                                                                        {i > 0 && step.rel && (
+                                                                            <span className="text-gray-400 text-xs italic whitespace-nowrap">—{relationNames[RELATION_TO_SHORT[step.rel]] || step.rel.replace(/_/g,' ')}→</span>
+                                                                        )}
+                                                                        <button
+                                                                            onClick={() => handleConceptClick(step.node)}
+                                                                            className={`px-1.5 py-0.5 rounded text-xs border ${step.node === parseInt(selectedConcept) ? 'bg-blue-100 border-blue-400 text-blue-800 font-semibold' : 'bg-white border-gray-300 text-blue-600 hover:border-blue-400'}`}>
+                                                                            {li?.form || `#${step.node}`}
+                                                                            {li?.lang && li.lang !== definitionLanguage && <span className="text-gray-400 ml-0.5">[{li.lang}]</span>}
+                                                                        </button>
+                                                                    </React.Fragment>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                                );
+                                            })()}
 
                                             {altDefs.length > 0 && (
                                                 <div className="mb-4">
@@ -1998,7 +2115,7 @@
                                                         .map(([lang, senseIds]) => {
                                                             const lemmas = senseIds.map(sid => {
                                                                 const sd = loadedSenses[sid.toString()];
-                                                                return sd ? { lemma: sd.l, senseId: sid.toString() } : null;
+                                                                return sd ? { lemma: sd.l, ind: sd.ind, senseId: sid.toString() } : null;
                                                             }).filter(Boolean);
                                                             return (
                                                                 <div key={lang} className="text-sm">
@@ -2006,7 +2123,7 @@
                                                                     {lemmas.map((item, idx) => (
                                                                         <span key={item.senseId}>{idx > 0 && ', '}
                                                                             <button onClick={() => handleWordformClickWithSense(item.lemma, item.senseId)}
-                                                                                className="text-blue-600 hover:underline">{item.lemma}</button>
+                                                                                className="text-blue-600 hover:underline">{item.lemma}<sub className="text-gray-400">{item.ind}</sub></button>
                                                                             {renderProvenance('senses', parseInt(item.senseId))}
                                                                         </span>
                                                                     ))}
