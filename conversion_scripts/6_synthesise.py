@@ -10,12 +10,15 @@ Replaces the old two-step pipeline (old 6_synthesise → 10_sqlite_conversion).
 """
 
 import json
+import logging
 import re
 import sqlite3
 import subprocess
 import sys
 import unicodedata
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 import langcodes
 from lxml import etree as ET
@@ -137,7 +140,7 @@ CREATE TABLE provenance (
     item_rowid     INTEGER NOT NULL,
     resource_rowid INTEGER NOT NULL REFERENCES prov_resources(rowid),
     version        TEXT,
-    original_id    TEXT NOT NULL
+    original_id    TEXT
 );
 CREATE INDEX idx_provenance_lookup ON provenance(table_rowid, item_rowid);
 """
@@ -287,8 +290,13 @@ class MergeBuilder:
         # Deduplication sets (avoid re-inserting identical rows)
         self._gloss_keys: set[tuple[int, int]] = set()
         self._sense_keys: set[tuple[int, int]] = set()
-        self._synset_rel_keys: set[tuple[int, int, int]] = set()
-        self._sense_rel_keys: set[tuple[int, int, int]] = set()
+        # Maps (source, target, type_rowid) → resource_code ('' for auto-generated)
+        self._synset_rel_keys: dict[tuple[int, int, int], str] = {}
+        self._sense_rel_keys: dict[tuple[int, int, int], str] = {}
+
+        # Reverse maps for human-readable conflict log messages
+        self._synset_rowid_to_ili: dict[int, str] = {}
+        self._sense_rowid_to_id: dict[int, str] = {}
 
         # Resource metadata collected from file root attributes
         self._resources: dict[str, dict] = {}
@@ -322,7 +330,7 @@ class MergeBuilder:
         # Counters for progress reporting
         self.n_synsets = self.n_entries = self.n_forms = self.n_pronunciations = 0
         self.n_senses = self.n_defs = self.n_examples = 0
-        self.n_sense_rels = self.n_synset_rels = self.n_prov = 0
+        self.n_sense_rels = self.n_synset_rels = self.n_prov = self.n_rel_conflicts = 0
 
     # --- Lookup helpers ---
 
@@ -376,12 +384,11 @@ class MergeBuilder:
         count = 0
         for p in prov_elems:
             resource = p.get('resource')
-            original_id = p.get('original_id')
-            if resource and original_id:
+            if resource:
                 self._prov_buf.append((
                     table_rowid, item_rowid,
                     self._prov_resource_rowid(resource),
-                    p.get('version'), original_id,
+                    p.get('version'), p.get('original_id'),
                 ))
                 count += 1
         if len(self._prov_buf) >= BATCH_SIZE:
@@ -399,6 +406,7 @@ class MergeBuilder:
         self._next_synset_id += 1
         self._synsets_buf.append((rowid, ili, elem.get('ontological_category')))
         self.synset_id_to_rowid[cid] = rowid
+        self._synset_rowid_to_ili[rowid] = cid
         self.n_prov += self._insert_prov('synsets', rowid, elem.findall('Provenance'))
         self.n_synsets += 1
 
@@ -492,7 +500,9 @@ class MergeBuilder:
         sense_rowid = self._next_sense_id
         self._next_sense_id += 1
         self._senses_buf.append((sense_rowid, entry_rowid, synset_rowid))
-        self.sense_id_to_rowid[elem.get('id')] = sense_rowid
+        sid = elem.get('id')
+        self.sense_id_to_rowid[sid] = sense_rowid
+        self._sense_rowid_to_id[sense_rowid] = sid
         self.n_prov += self._insert_prov(
             'senses', sense_rowid, elem.findall('Provenance')
         )
@@ -563,24 +573,41 @@ class MergeBuilder:
         if not source or not target:
             return
 
+        prov_elems = elem.findall('Provenance')
+        current_resource = prov_elems[0].get('resource') if prov_elems else ''
         type_rowid = self._rel_type_rowid(rel_type)
+        inv = INVERSE_SENSE_RELATIONS.get(rel_type)
+
+        # Conflict: same relation type exists with source/target reversed
+        if inv != rel_type:
+            reverse_key = (target, source, type_rowid)
+            if reverse_key in self._sense_rel_keys:
+                src_id = self._sense_rowid_to_id.get(source, f'#{source}')
+                tgt_id = self._sense_rowid_to_id.get(target, f'#{target}')
+                prior = self._sense_rel_keys[reverse_key] or 'auto-generated'
+                logger.warning(
+                    'Reversed sense_relation skipped [%s]: %s %s %s '
+                    '(conflicts with %s %s %s from [%s])',
+                    current_resource, src_id, rel_type, tgt_id,
+                    tgt_id, rel_type, src_id, prior,
+                )
+                self.n_rel_conflicts += 1
+                return
+
         key = (source, target, type_rowid)
         if key not in self._sense_rel_keys:
-            self._sense_rel_keys.add(key)
+            self._sense_rel_keys[key] = current_resource
             sr_rowid = self._next_sense_rel_id
             self._next_sense_rel_id += 1
             self._sense_rels_buf.append((sr_rowid, source, target, type_rowid))
-            self.n_prov += self._insert_prov(
-                'sense_relations', sr_rowid, elem.findall('Provenance')
-            )
+            self.n_prov += self._insert_prov('sense_relations', sr_rowid, prov_elems)
             self.n_sense_rels += 1
 
-        inv = INVERSE_SENSE_RELATIONS.get(rel_type)
         if inv:
             inv_type = self._rel_type_rowid(inv)
             inv_key = (target, source, inv_type)
             if inv_key not in self._sense_rel_keys:
-                self._sense_rel_keys.add(inv_key)
+                self._sense_rel_keys[inv_key] = ''
                 inv_rowid = self._next_sense_rel_id
                 self._next_sense_rel_id += 1
                 self._sense_rels_buf.append((inv_rowid, target, source, inv_type))
@@ -593,24 +620,40 @@ class MergeBuilder:
         if not source or not target:
             return
 
+        prov_elems = elem.findall('Provenance')
+        current_resource = prov_elems[0].get('resource') if prov_elems else ''
         type_rowid = self._rel_type_rowid(rel_type)
+        inv = INVERSE_CONCEPT_RELATIONS.get(rel_type)
+
+        if inv != rel_type:
+            reverse_key = (target, source, type_rowid)
+            if reverse_key in self._synset_rel_keys:
+                src_ili = self._synset_rowid_to_ili.get(source, f'#{source}')
+                tgt_ili = self._synset_rowid_to_ili.get(target, f'#{target}')
+                prior = self._synset_rel_keys[reverse_key] or 'auto-generated'
+                logger.warning(
+                    'Reversed synset_relation skipped [%s]: %s %s %s '
+                    '(conflicts with %s %s %s from [%s])',
+                    current_resource, src_ili, rel_type, tgt_ili,
+                    tgt_ili, rel_type, src_ili, prior,
+                )
+                self.n_rel_conflicts += 1
+                return
+
         key = (source, target, type_rowid)
         if key not in self._synset_rel_keys:
-            self._synset_rel_keys.add(key)
+            self._synset_rel_keys[key] = current_resource
             cr_rowid = self._next_synset_rel_id
             self._next_synset_rel_id += 1
             self._synset_rels_buf.append((cr_rowid, source, target, type_rowid))
-            self.n_prov += self._insert_prov(
-                'synset_relations', cr_rowid, elem.findall('Provenance')
-            )
+            self.n_prov += self._insert_prov('synset_relations', cr_rowid, prov_elems)
             self.n_synset_rels += 1
 
-        inv = INVERSE_CONCEPT_RELATIONS.get(rel_type)
         if inv:
             inv_type = self._rel_type_rowid(inv)
             inv_key = (target, source, inv_type)
             if inv_key not in self._synset_rel_keys:
-                self._synset_rel_keys.add(inv_key)
+                self._synset_rel_keys[inv_key] = ''
                 inv_rowid = self._next_synset_rel_id
                 self._next_synset_rel_id += 1
                 self._synset_rels_buf.append((inv_rowid, target, source, inv_type))
@@ -1079,6 +1122,17 @@ class MergeBuilder:
 def main() -> None:
     sys.stdout.reconfigure(line_buffering=True)
 
+    log_path = Path('bin/relation_conflicts.log')
+    log_path.parent.mkdir(exist_ok=True)
+    logging.basicConfig(
+        level=logging.WARNING,
+        format='%(message)s',
+        handlers=[
+            logging.FileHandler(log_path, mode='w', encoding='utf-8'),
+            logging.StreamHandler(),
+        ],
+    )
+
     input_dir = Path('bin/cygnets_presynth')
     db_path = Path('web/cygnet.db')
     prov_db_path = Path('web/provenance.db')
@@ -1105,6 +1159,9 @@ def main() -> None:
     print(f'  Sense relations: {builder.n_sense_rels:,}')
     print(f'  Synset relations: {builder.n_synset_rels:,}')
     print(f'  Provenance rows: {builder.n_prov:,}')
+    if builder.n_rel_conflicts:
+        print(f'  Relation conflicts skipped: {builder.n_rel_conflicts:,}'
+              f' (see {log_path})')
 
     print('\nCreating indexes...')
     builder.create_indexes()

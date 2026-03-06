@@ -1935,7 +1935,7 @@
                                                                                     {li?.form || `#${rel.to}`}
                                                                                     {li?.lang && li.lang !== definitionLanguage && <span className="text-gray-400 text-xs ml-0.5">[{li.lang}]</span>}
                                                                                 </button>
-                                                                                {renderCompactProvenance('synset_relations', rel.rid)}
+                                                                                {renderCompactProvenance('synsets', rel.to)}
                                                                             </span>
                                                                         );
                                                                     })}
@@ -1963,7 +1963,7 @@
                                                                                 {li?.lang && li.lang !== definitionLanguage && conceptLabel === toSense?.l && (
                                                                                     <span className="text-gray-400 text-xs">[{li.lang}]</span>
                                                                                 )}
-                                                                                {renderCompactProvenance('sense_relations', rid)}
+                                                                                {renderCompactProvenance('senses', parseInt(toSenseId))}
                                                                             </span>
                                                                         );
                                                                     })}
