@@ -2422,9 +2422,27 @@
                                 if (!url) return null;
                                 const cc = url.match(/creativecommons\.org\/licenses\/([\w-]+)\/([\d.]+)/);
                                 if (cc) return `CC ${cc[1].toUpperCase()} ${cc[2]}`;
+                                if (/opendatacommons\.org.*odc-by|\/odc-by\//i.test(url)) return 'ODC BY';
+                                const cecill = url.match(/Licence_(CeCILL[^_]*)_V(\d+)/i);
+                                if (cecill) return `${cecill[1]} V${cecill[2]}`;
                                 if (/apache/i.test(url)) return 'Apache 2.0';
                                 if (url === 'wordnet') return 'WordNet';
                                 return url;
+                            };
+                            const [wnSort, setWnSort] = React.useState({ col: null, asc: true });
+                            const sortResources = (col) => setWnSort(s => ({ col, asc: s.col === col ? !s.asc : true }));
+                            const sortedResources = React.useMemo(() => {
+                                if (!wnSort.col) return allResources;
+                                const key = { Language: r => getLangFullName(r.language) || '', Name: r => r.label || r.code || '', Concepts: r => r.synset_count ?? -1, Senses: r => r.sense_count ?? -1, Version: r => r.version || '', Licence: r => shortLicence(r.licence) || '' }[wnSort.col];
+                                return [...allResources].sort((a, b) => {
+                                    const av = key(a), bv = key(b);
+                                    const cmp = typeof av === 'number' ? av - bv : av.localeCompare(bv);
+                                    return wnSort.asc ? cmp : -cmp;
+                                });
+                            }, [allResources, wnSort]);
+                            const SortTh = ({ col, right }) => {
+                                const active = wnSort.col === col;
+                                return <th className={`px-3 py-2 border border-gray-200 cursor-pointer select-none hover:bg-gray-200${right ? ' text-right' : ''}`} onClick={() => sortResources(col)}>{col}{active ? (wnSort.asc ? ' ▲' : ' ▼') : ''}</th>;
                             };
                             return (
                             <div>
@@ -2435,18 +2453,18 @@
                                     <table className="w-full text-sm border-collapse">
                                         <thead>
                                             <tr className="bg-gray-100 text-left">
-                                                <th className="px-3 py-2 border border-gray-200">Language</th>
-                                                <th className="px-3 py-2 border border-gray-200">Name</th>
-                                                <th className="px-3 py-2 border border-gray-200">Concepts</th>
-                                                <th className="px-3 py-2 border border-gray-200">Senses</th>
-                                                <th className="px-3 py-2 border border-gray-200">Version</th>
+                                                <SortTh col="Language"/>
+                                                <SortTh col="Name"/>
+                                                <SortTh col="Concepts" right/>
+                                                <SortTh col="Senses" right/>
+                                                <SortTh col="Version"/>
                                                 <th className="px-3 py-2 border border-gray-200">Citation</th>
-                                                <th className="px-3 py-2 border border-gray-200">Licence</th>
+                                                <SortTh col="Licence"/>
                                             </tr>
                                         </thead>
                                         <tbody>
-                                            {allResources.map((r, i) => (
-                                                <tr key={i}
+                                            {sortedResources.map((r, i) => (
+                                                <tr key={r.code}
                                                     ref={r.code === highlightedResource ? highlightedRowRef : null}
                                                     className={r.code === highlightedResource ? 'bg-yellow-100' : (i % 2 === 0 ? 'bg-white' : 'bg-gray-50')}>
                                                     <td className="px-3 py-2 border border-gray-200 whitespace-nowrap">
