@@ -1,0 +1,2542 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cygnet (SQL)</title>
+    <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/sql-wasm.js"></script>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🦢</text></svg>">
+    <style>
+        .sense-box:hover { border-color: #60a5fa !important; }
+        .sense-box:has(.concept-inner:hover) { border-color: #e5e7eb !important; }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useRef, useCallback } = React;
+
+        // ========== RELATION MAPPINGS ==========
+        // Map full DB relation names to short codes used by the UI
+        const RELATION_TO_SHORT = {
+            'antonym': 'ant', 'derivation': 'der', 'derivation_of': '-der',
+            'pertainym': 'ptr', 'pertainym_of': '-ptr',
+            'participle': 'prt', 'participle_of': '-prt',
+            'hypernym': 'hyp', 'hyponym': '-hyp',
+            'instance_hypernym': 'ihyp', 'instance_hyponym': '-ihyp',
+            'mero_member': 'mmer', 'holo_member': '-mmer',
+            'mero_part': 'pmer', 'holo_part': '-pmer',
+            'mero_substance': 'smer', 'holo_substance': '-smer',
+            'opposite': 'opp',
+            'causes': 'cau', 'is_caused_by': '-cau',
+            'entails': 'ent', 'is_entailed_by': '-ent',
+        };
+
+        const relationNames = {
+            'ant': 'antonym', 'der': 'derivation', 'ptr': 'pertainym',
+            'prt': 'participle', 'syn': 'synonym',
+            'hyp': 'hypernym', 'ihyp': 'instance hypernym',
+            'mmer': 'member meronym', 'pmer': 'part meronym', 'smer': 'substance meronym',
+            'opp': 'opposite', 'cau': 'causes', 'ent': 'entails',
+        };
+
+        const relationColors = {
+            'ant': '#ef4444', 'der': '#f59e0b', 'ptr': '#10b981',
+            'prt': '#06b6d4', 'syn': '#10b981',
+            'hyp': '#3b82f6', 'ihyp': '#6366f1',
+            'mmer': '#8b5cf6', 'pmer': '#a855f7', 'smer': '#d946ef',
+            'opp': '#ec4899', 'cau': '#f43f5e', 'ent': '#14b8a6',
+        };
+
+        const posToHumanReadable = {
+            'NOUN': 'Noun', 'VERB': 'Verb', 'ADJ': 'Adjective', 'ADV': 'Adverb',
+            'CONJ': 'Conjunction', 'ADP': 'Adposition', 'NREF': 'Non-referential', 'UNK': 'Unknown'
+        };
+
+        const remove_accents = (text) => text.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+
+        // ========== DATABASE URLs ==========
+        // Local dev (localhost): serve from web/ directory via run.sh
+        // Production: fetch from the latest GitHub release assets
+        const DB_BASE = (location.hostname === 'localhost' || location.hostname === '127.0.0.1')
+            ? ''
+            : 'https://github.com/fcbond/cygnet/releases/latest/download/';
+
+        // ========== SQL DATABASE LAYER ==========
+        let _db = null;
+        let _SQL = null;
+        let _provDb = null;
+
+        // Prepared statement cache
+        const _stmtCache = {};
+        function cachedExec(sql, params = []) {
+            if (!_db) return [];
+            try {
+                const results = _db.exec(sql, params);
+                if (!results || results.length === 0) return [];
+                const { columns, values } = results[0];
+                return values.map(row => {
+                    const obj = {};
+                    columns.forEach((col, i) => { obj[col] = row[i]; });
+                    return obj;
+                });
+            } catch (e) {
+                console.error('SQL error:', sql, params, e);
+                return [];
+            }
+        }
+
+        // Language code to name mapping (built from DB)
+        let _langNames = {};
+        let _langRowidToCode = {};
+
+        function buildLangNames() {
+            const hasName = cachedExec(`PRAGMA table_info(languages)`).some(c => c.name === 'name');
+            const sql = hasName
+                ? `SELECT rowid, code, name FROM languages ORDER BY code`
+                : `SELECT rowid, code FROM languages ORDER BY code`;
+            cachedExec(sql).forEach(r => {
+                _langRowidToCode[r.rowid] = r.code;
+                _langNames[r.code] = r.name || r.code.toUpperCase();
+            });
+        }
+
+        const _SENSE_COLS = `s.rowid as sense_id, e.language_rowid as lang_rowid, syn.pos as pos,
+                       f.form as lemma, s.sense_index as ind, syn.rowid as synset_id`;
+        const _SENSE_JOINS = `FROM forms f
+                JOIN entries e ON f.entry_rowid = e.rowid
+                JOIN senses s ON s.entry_rowid = e.rowid
+                JOIN synsets syn ON s.synset_rowid = syn.rowid`;
+
+        function searchWordform(term) {
+            const normalized = remove_accents(term.toLowerCase());
+            const rows = cachedExec(`
+                SELECT ${_SENSE_COLS} ${_SENSE_JOINS}
+                WHERE f.normalized_form = ?
+                ORDER BY e.language_rowid, f.form
+            `, [normalized]);
+            return rows.map(r => ({ ...r, lg: _langRowidToCode[r.lang_rowid] }));
+        }
+
+        function searchGlob(term) {
+            const pattern = remove_accents(term.toLowerCase()).replace(/\*/g, '%').replace(/\?/g, '_');
+            const rows = cachedExec(`
+                SELECT ${_SENSE_COLS} ${_SENSE_JOINS}
+                WHERE f.normalized_form LIKE ? LIMIT 2000
+            `, [pattern]);
+            return rows.map(r => ({ ...r, lg: _langRowidToCode[r.lang_rowid] }));
+        }
+
+        function searchByIli(term) {
+            const norm = term.replace(/^cili\./, '');
+            const rows = cachedExec(`
+                SELECT ${_SENSE_COLS}
+                FROM synsets syn
+                JOIN senses s ON s.synset_rowid = syn.rowid
+                JOIN entries e ON s.entry_rowid = e.rowid
+                JOIN forms f ON f.entry_rowid = e.rowid AND f.rank = 0
+                WHERE syn.ili = ?
+                ORDER BY e.language_rowid, f.form
+            `, [norm]);
+            return rows.map(r => ({ ...r, lg: _langRowidToCode[r.lang_rowid] }));
+        }
+
+        function searchDefinition(term, langCodes) {
+            const params = [`%${term}%`];
+            let langClause = '';
+            if (langCodes && langCodes.size > 0) {
+                const rowids = Object.entries(_langRowidToCode)
+                    .filter(([, code]) => langCodes.has(code))
+                    .map(([rowid]) => parseInt(rowid));
+                if (rowids.length > 0) {
+                    langClause = `AND d.language_rowid IN (${rowids.map(() => '?').join(',')})`;
+                    params.push(...rowids);
+                }
+            }
+            const rows = cachedExec(`
+                SELECT ${_SENSE_COLS}
+                FROM definitions d
+                JOIN synsets syn ON d.synset_rowid = syn.rowid
+                JOIN senses s ON s.synset_rowid = syn.rowid
+                JOIN entries e ON s.entry_rowid = e.rowid
+                JOIN forms f ON f.entry_rowid = e.rowid AND f.rank = 0
+                WHERE d.definition LIKE ? ${langClause} LIMIT 2000
+            `, params);
+            return rows.map(r => ({ ...r, lg: _langRowidToCode[r.lang_rowid] }));
+        }
+
+        function detectSearchMode(term) {
+            if (/^(cili\.)?i\d+$/.test(term)) return 'ili';
+            if (term.startsWith('def:')) return 'definition';
+            if (term.includes('*') || term.includes('?')) return 'glob';
+            return 'exact';
+        }
+
+        function querySense(senseRowid) {
+            const rows = cachedExec(`
+                SELECT s.rowid as id, e.language_rowid as lang_rowid, e.pos as entry_pos,
+                       syn.pos as pos, syn.rowid as c, s.sense_index as ind
+                FROM senses s
+                JOIN entries e ON s.entry_rowid = e.rowid
+                JOIN synsets syn ON s.synset_rowid = syn.rowid
+                WHERE s.rowid = ?
+            `, [senseRowid]);
+            if (rows.length === 0) return null;
+            const r = rows[0];
+
+            // Get lemma (rank 0) and variants (rank > 0)
+            const forms = cachedExec(`
+                SELECT rowid, form, rank FROM forms
+                WHERE entry_rowid = (SELECT entry_rowid FROM senses WHERE rowid = ?)
+                ORDER BY rank
+            `, [senseRowid]);
+            const lemmaForm = forms.find(f => f.rank === 0);
+            const lemma = lemmaForm?.form || '';
+            const variants = forms.filter(f => f.rank > 0).map(f => f.form);
+            const pronunciations = lemmaForm ? cachedExec(`
+                SELECT variety, pronunciation FROM pronunciations
+                WHERE form_rowid = ? ORDER BY rowid
+            `, [lemmaForm.rowid]) : [];
+
+            // Get examples with annotations
+            const examples = cachedExec(`
+                SELECT e.rowid as example_rowid, e.example
+                FROM examples e
+                JOIN sense_examples se ON se.example_rowid = e.rowid
+                WHERE se.sense_rowid = ?
+            `, [senseRowid]);
+
+            const ex = examples.map(ex => {
+                const anns = cachedExec(`
+                    SELECT start_offset, end_offset, sense_rowid
+                    FROM example_annotations WHERE example_rowid = ?
+                `, [ex.example_rowid]);
+                // Build HTML with bolding for the current sense
+                let text = ex.example;
+                let parts = [];
+                let lastIdx = 0;
+                const sorted = anns.sort((a, b) => a.start_offset - b.start_offset);
+                for (const ann of sorted) {
+                    if (ann.start_offset > lastIdx) {
+                        parts.push(text.substring(lastIdx, ann.start_offset));
+                    }
+                    const tokenText = text.substring(ann.start_offset, ann.end_offset);
+                    if (ann.sense_rowid === senseRowid) {
+                        parts.push(`<b>${tokenText}</b>`);
+                    } else {
+                        parts.push(tokenText);
+                    }
+                    lastIdx = ann.end_offset;
+                }
+                if (lastIdx < text.length) parts.push(text.substring(lastIdx));
+                return parts.join('');
+            });
+
+            // Get sense relations
+            const senseRels = cachedExec(`
+                SELECT rt.type, sr.target_rowid as target, sr.rowid as rid
+                FROM sense_relations sr
+                JOIN relation_types rt ON sr.type_rowid = rt.rowid
+                WHERE sr.source_rowid = ?
+            `, [senseRowid]);
+            const sr = senseRels.map(rel => ({
+                t: RELATION_TO_SHORT[rel.type] || rel.type,
+                to: rel.target,
+                rid: rel.rid
+            }));
+
+            return {
+                id: r.id.toString(),
+                l: lemma,
+                v: variants,
+                p: pronunciations.length > 0 ? pronunciations : undefined,
+                lg: _langRowidToCode[r.lang_rowid],
+                c: r.c,
+                ind: r.ind,
+                ex: ex.length > 0 ? ex : undefined,
+                sr: sr.length > 0 ? sr : undefined,
+                ontological_category: r.pos
+            };
+        }
+
+        function queryConcept(synsetRowid) {
+            const rows = cachedExec(`
+                SELECT rowid, ili, pos FROM synsets WHERE rowid = ?
+            `, [synsetRowid]);
+            if (rows.length === 0) return null;
+            const r = rows[0];
+
+            // Get definitions grouped by language
+            const defs = cachedExec(`
+                SELECT rowid as def_rowid, definition, language_rowid FROM definitions
+                WHERE synset_rowid = ? ORDER BY language_rowid
+            `, [synsetRowid]);
+            const d = {};
+            const dr = {};
+            defs.forEach(def => {
+                const lang = _langRowidToCode[def.language_rowid];
+                d[lang] = def.definition;
+                dr[lang] = def.def_rowid;
+            });
+
+            // Get definition annotations (for English)
+            const enLangCode = Object.entries(_langRowidToCode).find(([_, code]) => code === 'en');
+            const enLangRowid = enLangCode ? parseInt(enLangCode[0]) : null;
+            const enDef = defs.find(def => def.language_rowid === enLangRowid);
+            let da = undefined;
+            if (enDef) {
+                const anns = cachedExec(`
+                    SELECT start_offset as so, end_offset as eo, sense_rowid as s
+                    FROM definition_annotations WHERE definition_rowid = ?
+                `, [enDef.def_rowid]);
+                if (anns.length > 0) da = anns;
+            }
+
+            // Get senses grouped by language
+            const senses = cachedExec(`
+                SELECT s.rowid as sense_id, e.language_rowid
+                FROM senses s
+                JOIN entries e ON s.entry_rowid = e.rowid
+                WHERE s.synset_rowid = ?
+                ORDER BY e.language_rowid
+            `, [synsetRowid]);
+            const s = {};
+            senses.forEach(sense => {
+                const lang = _langRowidToCode[sense.language_rowid];
+                if (!s[lang]) s[lang] = [];
+                s[lang].push(sense.sense_id);
+            });
+
+            // Get concept relations
+            const rels = cachedExec(`
+                SELECT rt.type, sr.target_rowid as target, sr.rowid as rid
+                FROM synset_relations sr
+                JOIN relation_types rt ON sr.type_rowid = rt.rowid
+                WHERE sr.source_rowid = ?
+            `, [synsetRowid]);
+            const cr = rels.map(rel => ({
+                t: RELATION_TO_SHORT[rel.type] || rel.type,
+                to: rel.target,
+                rid: rel.rid
+            }));
+
+            return {
+                oc: r.pos,
+                ili: r.ili,
+                d: Object.keys(d).length > 0 ? d : undefined,
+                dr: Object.keys(dr).length > 0 ? dr : undefined,
+                da,
+                s: Object.keys(s).length > 0 ? s : undefined,
+                cr: cr.length > 0 ? cr : undefined
+            };
+        }
+
+        function findPath(fromId, toId) {
+            if (fromId === toId) return [{ node: fromId, rel: null }];
+            const MAX_DEPTH = 12;
+            const visited = new Map([[fromId, { prev: null, rel: null }]]);
+            let frontierArr = [fromId];
+            let frontierSet = new Set([fromId]);
+            for (let depth = 0; depth < MAX_DEPTH && frontierArr.length > 0; depth++) {
+                const ph = frontierArr.map(() => '?').join(',');
+                const rows = cachedExec(`
+                    SELECT source_rowid as src, target_rowid as tgt, rt.type as rel
+                    FROM synset_relations sr
+                    JOIN relation_types rt ON sr.type_rowid = rt.rowid
+                    WHERE source_rowid IN (${ph}) OR target_rowid IN (${ph})
+                `, [...frontierArr, ...frontierArr]);
+                const nextArr = [];
+                const nextSet = new Set();
+                let found = false;
+                for (const {src, tgt, rel} of rows) {
+                    for (const [node, neighbor] of [[src, tgt], [tgt, src]]) {
+                        if (!frontierSet.has(node) || visited.has(neighbor)) continue;
+                        visited.set(neighbor, { prev: node, rel });
+                        if (neighbor === toId) { found = true; break; }
+                        if (!nextSet.has(neighbor)) { nextArr.push(neighbor); nextSet.add(neighbor); }
+                    }
+                    if (found) break;
+                }
+                if (found) {
+                    const path = [];
+                    let cur = toId;
+                    while (cur !== null) {
+                        const { prev, rel } = visited.get(cur);
+                        path.unshift({ node: cur, rel });
+                        cur = prev;
+                    }
+                    return path;
+                }
+                frontierArr = nextArr;
+                frontierSet = nextSet;
+            }
+            return null;
+        }
+
+        const _labelCache = {};
+        function getConceptLabel(synsetRowid, lang = 'en') {
+            const key = `${synsetRowid}-${lang}`;
+            if (_labelCache[key] !== undefined) return _labelCache[key];
+            const queryLang = `
+                SELECT f.form FROM senses s
+                JOIN entries e ON s.entry_rowid = e.rowid
+                JOIN forms f ON f.entry_rowid = e.rowid
+                JOIN languages l ON e.language_rowid = l.rowid
+                WHERE s.synset_rowid = ? AND l.code = ? AND f.rank = 0
+                ORDER BY s.sense_index LIMIT 1`;
+            const queryAny = `
+                SELECT f.form, l.code as lang_code FROM senses s
+                JOIN entries e ON s.entry_rowid = e.rowid
+                JOIN forms f ON f.entry_rowid = e.rowid
+                JOIN languages l ON e.language_rowid = l.rowid
+                WHERE s.synset_rowid = ? AND f.rank = 0
+                ORDER BY s.sense_index LIMIT 1`;
+            let rows = cachedExec(queryLang, [synsetRowid, lang]);
+            if (rows.length > 0) {
+                const result = { form: rows[0].form, lang };
+                _labelCache[key] = result;
+                return result;
+            }
+            if (lang !== 'en') {
+                rows = cachedExec(queryLang, [synsetRowid, 'en']);
+                if (rows.length > 0) {
+                    const result = { form: rows[0].form, lang: 'en' };
+                    _labelCache[key] = result;
+                    return result;
+                }
+            }
+            rows = cachedExec(queryAny, [synsetRowid]);
+            const result = rows[0]?.form ? { form: rows[0].form, lang: rows[0].lang_code } : null;
+            _labelCache[key] = result;
+            return result;
+        }
+
+        function getAllLanguages() {
+            const rows = cachedExec(`SELECT code FROM languages ORDER BY code`);
+            return rows.map(r => r.code);
+        }
+
+        function queryResources() {
+            const cols = new Set(cachedExec('PRAGMA table_info(resources)').map(c => c.name));
+            const coverage = cols.has('synset_count')
+                ? ', r.synset_count, r.sense_count'
+                : ', null AS synset_count, null AS sense_count';
+            return cachedExec(
+                `SELECT r.code, r.version, r.label, l.code AS language,
+                        r.url, r.citation, r.licence, r.email, r.status,
+                        r.confidence_score, r.extra${coverage}
+                 FROM resources r
+                 LEFT JOIN languages l ON r.language_rowid = l.rowid
+                 ORDER BY r.label`
+            );
+        }
+
+        function queryStats() {
+            const get = sql => { const r = cachedExec(sql); return r.length ? Object.values(r[0])[0] : 0; };
+            return {
+                synsets:   get(`SELECT COUNT(*) FROM synsets`),
+                entries:   get(`SELECT COUNT(*) FROM entries`),
+                senses:    get(`SELECT COUNT(*) FROM senses`),
+                languages: get(`SELECT COUNT(DISTINCT language_rowid) FROM entries`),
+            };
+        }
+
+        function cachedExecProv(sql, params = []) {
+            if (!_provDb) return [];
+            try {
+                const results = _provDb.exec(sql, params);
+                if (!results || results.length === 0) return [];
+                const { columns, values } = results[0];
+                return values.map(row => {
+                    const obj = {};
+                    columns.forEach((col, i) => { obj[col] = row[i]; });
+                    return obj;
+                });
+            } catch (e) {
+                console.error('Provenance SQL error:', sql, params, e);
+                return [];
+            }
+        }
+
+        function queryProvenance(tableName, itemRowid) {
+            return cachedExecProv(
+                `SELECT pr.code, p.version, p.original_id
+                 FROM provenance p
+                 JOIN prov_tables pt ON p.table_rowid = pt.rowid
+                 JOIN prov_resources pr ON p.resource_rowid = pr.rowid
+                 WHERE pt.name = ? AND p.item_rowid = ?`,
+                [tableName, itemRowid]
+            );
+        }
+
+        // ========== INDEXEDDB CACHE ==========
+        const IDB_NAME = 'cygnet-cache';
+        const IDB_STORE = 'blobs';
+
+        function idbOpen() {
+            return new Promise((resolve, reject) => {
+                const req = indexedDB.open(IDB_NAME, 1);
+                req.onupgradeneeded = () => req.result.createObjectStore(IDB_STORE);
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function idbGet(key) {
+            const db = await idbOpen();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(IDB_STORE, 'readonly');
+                const req = tx.objectStore(IDB_STORE).get(key);
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function idbPut(key, value) {
+            const db = await idbOpen();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(IDB_STORE, 'readwrite');
+                tx.objectStore(IDB_STORE).put(value, key);
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        }
+
+        async function idbDel(key) {
+            const db = await idbOpen();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(IDB_STORE, 'readwrite');
+                tx.objectStore(IDB_STORE).delete(key);
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        }
+
+        async function idbClear() {
+            const db = await idbOpen();
+            return new Promise((resolve, reject) => {
+                const tx = db.transaction(IDB_STORE, 'readwrite');
+                tx.objectStore(IDB_STORE).clear();
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+            });
+        }
+
+        // ========== MAIN COMPONENT ==========
+        function DictionaryBrowser() {
+            const [dbReady, setDbReady] = useState(false);
+            const [dbError, setDbError] = useState(null);
+            const [dbProgress, setDbProgress] = useState('');
+            const [downloadProgress, setDownloadProgress] = useState(null); // {loaded, total} or null
+            const [allLanguages, setAllLanguages] = useState([]);
+            const [allResources, setAllResources] = useState([]);
+            const [dbStats, setDbStats] = useState(null);
+            const [wnSort, setWnSort] = useState({ col: null, asc: true });
+            const [provenanceReady, setProvenanceReady] = useState(false);
+            const [provLoading, setProvLoading] = useState(false);
+            const [provError, setProvError] = useState(null);
+            const [showProvenance, setShowProvenance] = useState(() =>
+                localStorage.getItem('showProvenance') === 'true'
+            );
+            const [showPronunciation, setShowPronunciation] = useState(() =>
+                localStorage.getItem('showPronunciation') !== 'false'
+            );
+            const [highlightedResource, setHighlightedResource] = useState(null);
+            const highlightedRowRef = useRef(null);
+            const [infoPopup, setInfoPopup] = useState(null);
+            const [searchTerm, setSearchTerm] = useState('');
+            const [currentSearch, setCurrentSearch] = useState('');
+            const [currentSearchSenseIds, setCurrentSearchSenseIds] = useState(new Set());
+            const [languageFilter, setLanguageFilter] = useState(new Set());
+            const [posFilter, setPosFilter] = useState(new Set());
+            const [senseFilter, setSenseFilter] = useState(null);
+            const [selectedConcept, setSelectedConcept] = useState(null);
+            const [selectedSense, setSelectedSense] = useState(null);
+            const [view, setView] = useState('search');
+            const [loadingResults, setLoadingResults] = useState(false);
+            const [loadedSenses, setLoadedSenses] = useState({});
+            const [loadedConcepts, setLoadedConcepts] = useState({});
+            const [activeTab, setActiveTab] = useState('browser');
+            const [collapsedSections, setCollapsedSections] = useState({});
+            const [synonymsCollapsed, setSynonymsCollapsed] = useState({});
+            const [settingsOpen, setSettingsOpen] = useState(false);
+            const [relationsView, setRelationsView] = useState(() =>
+                localStorage.getItem('relationsView') || 'graph'
+            );
+            const [definitionLanguage, setDefinitionLanguage] = useState(() =>
+                localStorage.getItem('definitionLanguage') || 'en'
+            );
+            const [relatedConcepts, setRelatedConcepts] = useState({});
+            const [visibleNodes, setVisibleNodes] = useState(new Set());
+            const [hoveredNode, setHoveredNode] = useState(null);
+            const [hoverMenuPosition, setHoverMenuPosition] = useState(null);
+            const [selectedCategories, setSelectedCategories] = useState({});
+            const [pathTargetIli, setPathTargetIli] = useState('');
+            const [pathTargetRowid, setPathTargetRowid] = useState(null);
+            const [pathResult, setPathResult] = useState(null);
+            const [pathNotFound, setPathNotFound] = useState(false);
+            const isPopStateRef = useRef(false);
+            const isInitialLoadRef = useRef(true);
+            const hoverTimeoutRef = useRef(null);
+            const isLoadingRelationsRef = useRef(false);
+            const simulationRef = useRef(null);
+            const svgRef = useRef(null);
+            const gRef = useRef(null);
+            const lastConceptRef = useRef(null);
+            const setHoverMenuPositionRef = useRef(null);
+            setHoverMenuPositionRef.current = setHoverMenuPosition;
+            const menuRef = useRef(null);
+            const menuInteractionRef = useRef(false);
+            const settingsRef = useRef(null);
+            const hoveredNodeRef = useRef(null);
+            const nodeSizeCache = useRef(new Map());
+            const MAX_CACHE_SIZE = 200;
+
+            const addToCache = (key, value) => {
+                const cache = nodeSizeCache.current;
+                if (cache.size >= MAX_CACHE_SIZE) {
+                    const firstKey = cache.keys().next().value;
+                    cache.delete(firstKey);
+                }
+                cache.set(key, value);
+            };
+
+            useEffect(() => { hoveredNodeRef.current = hoveredNode; }, [hoveredNode]);
+
+            useEffect(() => {
+                if (!settingsOpen) return;
+                const handleClick = (e) => {
+                    if (settingsRef.current && !settingsRef.current.contains(e.target))
+                        setSettingsOpen(false);
+                };
+                document.addEventListener('mousedown', handleClick);
+                return () => document.removeEventListener('mousedown', handleClick);
+            }, [settingsOpen]);
+
+            // Initialize database
+            useEffect(() => {
+                (async () => {
+                    try {
+                        setDbProgress('Loading sql.js...');
+                        const SQL = await initSqlJs({
+                            locateFile: file => `https://cdnjs.cloudflare.com/ajax/libs/sql.js/1.10.2/${file}`
+                        });
+
+                        // Check IndexedDB cache, validating against server mtime
+                        let buf;
+                        try {
+                            const cached = await idbGet('db');
+                            if (cached) {
+                                let stale = false;
+                                try {
+                                    const head = await fetch(DB_BASE + 'cygnet.db.gz', { method: 'HEAD' });
+                                    const serverMtime = head.headers.get('last-modified') || head.headers.get('etag');
+                                    const cachedMtime = await idbGet('db-mtime');
+                                    if (serverMtime && serverMtime !== cachedMtime) stale = true;
+                                } catch (_) { /* offline — trust cache */ }
+                                if (stale) {
+                                    setDbProgress('Database updated, clearing cache...');
+                                    await Promise.all([idbDel('db'), idbDel('provdb'), idbDel('db-mtime')]);
+                                } else {
+                                    setDbProgress('Loading from cache...');
+                                    buf = new Uint8Array(cached);
+                                }
+                            }
+                        } catch (e) {
+                            console.warn('IndexedDB cache read failed:', e);
+                        }
+
+                        if (!buf) {
+                            // Fetch compressed database
+                            setDbProgress('Downloading database...');
+                            const response = await fetch(DB_BASE + 'cygnet.db.gz');
+                            if (!response.ok) throw new Error(`Failed to fetch database: ${response.status}`);
+                            const serverMtime = response.headers.get('last-modified') || response.headers.get('etag') || '';
+                            const compressedTotal = parseInt(response.headers.get('content-length') || '0');
+
+                            // Stream through DecompressionStream
+                            const ds = new DecompressionStream('gzip');
+                            const decompressedStream = response.body.pipeThrough(ds);
+                            const reader = decompressedStream.getReader();
+
+                            // We track compressed bytes via a wrapper on the original body
+                            // But DecompressionStream consumes the body, so we track decompressed bytes
+                            let loaded = 0;
+                            const chunks = [];
+                            while (true) {
+                                const { done, value } = await reader.read();
+                                if (done) break;
+                                chunks.push(value);
+                                loaded += value.length;
+                                if (compressedTotal > 0) {
+                                    // Estimate: show decompressed MB (compressed size known for reference)
+                                    setDbProgress('Downloading & decompressing...');
+                                    setDownloadProgress({ loaded, total: null, compressedTotal });
+                                } else {
+                                    setDbProgress(`Decompressing... ${(loaded/1048576).toFixed(0)} MB`);
+                                }
+                            }
+
+                            buf = new Uint8Array(loaded);
+                            let offset = 0;
+                            for (const chunk of chunks) {
+                                buf.set(chunk, offset);
+                                offset += chunk.length;
+                            }
+                            setDownloadProgress(null);
+
+                            // Cache in IndexedDB
+                            setDbProgress('Caching for next visit...');
+                            try {
+                                await idbPut('db', buf.buffer);
+                                if (serverMtime) await idbPut('db-mtime', serverMtime);
+                            } catch (e) {
+                                console.warn('IndexedDB cache write failed:', e);
+                            }
+                        }
+
+                        setDbProgress('Opening database...');
+                        _SQL = SQL;
+                        _db = new SQL.Database(buf);
+                        buildLangNames();
+                        setAllLanguages(getAllLanguages());
+                        setAllResources(queryResources());
+                        setDbStats(queryStats());
+                        setDbReady(true);
+                    } catch (e) {
+                        console.error('DB init error:', e);
+                        setDbError(e.message);
+                    }
+                })();
+            }, []);
+
+            const getLangName = (langCode) => langCode ? (_langNames[langCode] || langCode.toUpperCase()) : '';
+            const getLangFullName = getLangName;
+
+            const getPosName = (posCode, capitalize = false) => {
+                const names = {
+                    'NOUN': 'noun', 'VERB': 'verb', 'ADJ': 'adjective', 'ADV': 'adverb',
+                    'CONJ': 'conjunction', 'ADP': 'adposition', 'NREF': 'non-referential', 'UNK': 'unknown'
+                };
+                const name = names[posCode] || posCode?.toLowerCase() || '';
+                return capitalize ? name.charAt(0).toUpperCase() + name.slice(1) : name;
+            };
+
+            const toggleSection = (key) => {
+                setCollapsedSections(prev => ({ ...prev, [key]: !prev[key] }));
+            };
+
+            const toggleSynonyms = (senseId) => {
+                setSynonymsCollapsed(prev => ({
+                    ...prev,
+                    [senseId]: prev[senseId] === false ? true : false
+                }));
+            };
+
+            const loadConcept = useCallback((conceptId) => {
+                const cid = conceptId.toString();
+                if (loadedConcepts[cid]) return loadedConcepts[cid];
+                const data = queryConcept(parseInt(cid));
+                if (data) {
+                    setLoadedConcepts(prev => ({ ...prev, [cid]: data }));
+                }
+                return data;
+            }, [loadedConcepts]);
+
+            const getConceptData = (conceptId) => {
+                const cid = conceptId?.toString();
+                if (!cid) return null;
+                return loadedConcepts[cid] || null;
+            };
+
+            const loadSenseData = useCallback((senseId) => {
+                const sid = senseId.toString();
+                if (loadedSenses[sid]?.l) return loadedSenses[sid];
+                const data = querySense(parseInt(sid));
+                if (data) {
+                    setLoadedSenses(prev => ({ ...prev, [sid]: data }));
+                }
+                return data;
+            }, [loadedSenses]);
+
+            const loadConceptRelations = useCallback((conceptId) => {
+                const concept = loadedConcepts[conceptId] || loadConcept(conceptId);
+                if (!concept) return {};
+                const relations = {};
+                if (concept.cr) {
+                    for (const rel of concept.cr) {
+                        if (!relations[rel.t]) relations[rel.t] = [];
+                        relations[rel.t].push(rel.to.toString());
+                        // Preload target concept
+                        loadConcept(rel.to.toString());
+                    }
+                }
+                return relations;
+            }, [loadedConcepts, loadConcept]);
+
+            const categorizeRelations = useCallback((relations) => {
+                const categories = {
+                    hypernyms: [], hyponyms: [], meronyms: [], holonyms: [],
+                    roles: [], inferences: [], opposites: []
+                };
+                for (const relType in relations) {
+                    const targets = relations[relType];
+                    const isInverse = relType.startsWith('-');
+                    const baseType = isInverse ? relType.substring(1) : relType;
+
+                    if (baseType === 'hyp' || baseType === 'ihyp') {
+                        if (isInverse) categories.hyponyms.push(...targets.map(t => ({ type: relType, target: t })));
+                        else categories.hypernyms.push(...targets.map(t => ({ type: relType, target: t })));
+                    } else if (baseType === 'mmer' || baseType === 'pmer' || baseType === 'smer') {
+                        if (isInverse) categories.holonyms.push(...targets.map(t => ({ type: relType, target: t })));
+                        else categories.meronyms.push(...targets.map(t => ({ type: relType, target: t })));
+                    } else if (['aga','paa','rea','iag','iac','rag','pag','ipa','ire','pre'].includes(baseType)) {
+                        categories.roles.push(...targets.map(t => ({ type: relType, target: t })));
+                    } else if (baseType === 'cau' || baseType === 'ent') {
+                        categories.inferences.push(...targets.map(t => ({ type: relType, target: t })));
+                    } else if (baseType === 'opp') {
+                        categories.opposites.push(...targets.map(t => ({ type: relType, target: t })));
+                    }
+                }
+                return categories;
+            }, []);
+
+            const loadConceptWithRelations = useCallback((conceptId) => {
+                const cid = conceptId.toString();
+                loadConcept(cid);
+                const relations = loadConceptRelations(cid);
+
+                const initialVisible = new Set([cid]);
+                const initialSelected = {};
+                const categories = categorizeRelations(relations);
+
+                if (categories.hypernyms.length > 0) {
+                    const updates = {};
+                    categories.hypernyms.forEach(rel => {
+                        initialVisible.add(rel.target);
+                        loadConcept(rel.target);
+                        updates[rel.target] = loadConceptRelations(rel.target);
+                    });
+                    initialSelected[cid] = new Set(['hypernyms']);
+                    setVisibleNodes(initialVisible);
+                    setSelectedCategories(initialSelected);
+                    setRelatedConcepts(prev => ({ ...prev, [cid]: relations, ...updates }));
+                } else {
+                    setVisibleNodes(initialVisible);
+                    setSelectedCategories(initialSelected);
+                    setRelatedConcepts(prev => ({ ...prev, [cid]: relations }));
+                }
+            }, [loadConcept, loadConceptRelations, categorizeRelations]);
+
+            useEffect(() => {
+                if (dbReady && showProvenance && !_provDb && !provLoading) loadProvenanceDb();
+            }, [dbReady]);
+
+            const loadProvenanceDb = useCallback(async () => {
+                if (_provDb || provLoading) return;
+                setProvLoading(true);
+                setProvError(null);
+                try {
+                    let buf;
+                    try {
+                        const cached = await idbGet('provdb');
+                        if (cached) buf = new Uint8Array(cached);
+                    } catch (e) {
+                        console.warn('IndexedDB provenance cache read failed:', e);
+                    }
+
+                    if (!buf) {
+                        const response = await fetch(DB_BASE + 'provenance.db.gz');
+                        if (!response.ok) throw new Error(`Failed to fetch: ${response.status}`);
+                        const ds = new DecompressionStream('gzip');
+                        const reader = response.body.pipeThrough(ds).getReader();
+                        const chunks = [];
+                        let loaded = 0;
+                        while (true) {
+                            const { done, value } = await reader.read();
+                            if (done) break;
+                            chunks.push(value);
+                            loaded += value.length;
+                        }
+                        buf = new Uint8Array(loaded);
+                        let offset = 0;
+                        for (const chunk of chunks) { buf.set(chunk, offset); offset += chunk.length; }
+                        try { await idbPut('provdb', buf.buffer); } catch (e) {
+                            console.warn('IndexedDB provenance cache write failed:', e);
+                        }
+                    }
+
+                    _provDb = new _SQL.Database(buf);
+                    setProvenanceReady(true);
+                } catch (e) {
+                    console.error('Provenance DB load error:', e);
+                    setProvError(e.message);
+                } finally {
+                    setProvLoading(false);
+                }
+            }, [provLoading]);
+
+            useEffect(() => {
+                localStorage.setItem('definitionLanguage', definitionLanguage);
+            }, [definitionLanguage]);
+
+            useEffect(() => {
+                if (activeTab === 'wordnets' && highlightedResource && highlightedRowRef.current) {
+                    highlightedRowRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+            }, [activeTab, highlightedResource]);
+
+            useEffect(() => {
+                if (view === 'concept') window.scrollTo(0, 0);
+            }, [view, selectedConcept]);
+
+            // URL hash routing
+            useEffect(() => {
+                if (!dbReady) return;
+                if (isInitialLoadRef.current) { isInitialLoadRef.current = false; return; }
+                if (isPopStateRef.current) { isPopStateRef.current = false; return; }
+
+                let newUrl;
+                if (activeTab !== 'browser') {
+                    newUrl = `#/${activeTab}`;
+                } else if (view === 'search') {
+                    const params = new URLSearchParams();
+                    if (currentSearch) params.set('q', currentSearch);
+                    if (languageFilter.size > 0) params.set('lang', Array.from(languageFilter).join(','));
+                    if (posFilter.size > 0) params.set('pos', Array.from(posFilter).join(','));
+                    if (senseFilter) params.set('s', senseFilter);
+                    const qs = params.toString();
+                    newUrl = qs ? '#/search?' + qs : '#/search';
+                } else if (view === 'concept' && selectedConcept) {
+                    newUrl = '#/search?concept=' + selectedConcept;
+                } else if (view === 'sense' && selectedSense) {
+                    newUrl = '#/search?sense=' + selectedSense;
+                }
+                if (newUrl && newUrl !== window.location.hash) {
+                    window.history.pushState({}, '', newUrl);
+                }
+            }, [view, currentSearch, languageFilter, posFilter, senseFilter, selectedConcept, selectedSense, dbReady, activeTab]);
+
+            // Handle popstate
+            useEffect(() => {
+                const handlePopState = () => {
+                    isPopStateRef.current = true;
+                    const hash = window.location.hash.slice(1);
+                    const [path, queryString] = hash.split('?');
+
+                    if (['python', 'data', 'about', 'publications', 'wordnets'].includes(path?.replace('/', ''))) {
+                        setActiveTab(path.replace('/', ''));
+                    } else {
+                        setActiveTab('browser');
+                        const params = new URLSearchParams(queryString || '');
+                        const urlSearch = params.get('q');
+                        const urlLang = params.get('lang') ? new Set(params.get('lang').split(',')) : new Set();
+                        const urlPos = params.get('pos') ? new Set(params.get('pos').split(',')) : new Set();
+                        const urlSense = params.get('sense');
+                        const urlSenseFilter = params.get('s');
+                        const urlConcept = params.get('concept');
+
+                        setLanguageFilter(urlLang);
+                        setPosFilter(urlPos);
+                        setSenseFilter(urlSenseFilter);
+                        setSynonymsCollapsed({});
+
+                        if (urlConcept) {
+                            setSelectedConcept(urlConcept);
+                            setSelectedSense(null);
+                            setView('concept');
+                            loadConceptWithRelations(urlConcept);
+                        } else if (urlSense) {
+                            setSelectedSense(urlSense);
+                            setSelectedConcept(null);
+                            setView('sense');
+                            loadSenseData(urlSense);
+                        } else {
+                            setView('search');
+                            setSelectedConcept(null);
+                            setSelectedSense(null);
+                            if (urlSearch) {
+                                setSearchTerm(urlSearch);
+                                setCurrentSearch(urlSearch);
+                            }
+                        }
+                    }
+                };
+
+                // Handle initial URL
+                if (dbReady) {
+                    const hash = window.location.hash;
+                    if (hash && hash !== '#/search') handlePopState();
+                }
+
+                window.addEventListener('popstate', handlePopState);
+                return () => window.removeEventListener('popstate', handlePopState);
+            }, [dbReady, loadConceptWithRelations, loadSenseData]);
+
+            // Search
+            const performSearch = useCallback((term, lang, pos, sense) => {
+                if (!term?.trim() || !dbReady) return;
+                setLoadingResults(true);
+
+                // Defer query so the spinner renders before the (potentially slow) SQL runs
+                setTimeout(() => {
+                const t = term.trim();
+                const mode = detectSearchMode(t);
+                const results = mode === 'ili'        ? searchByIli(t)
+                              : mode === 'definition' ? searchDefinition(t.slice(4).trim(), lang)
+                              : mode === 'glob'       ? searchGlob(t)
+                              : searchWordform(t);
+                const senseMap = {};
+
+                results.forEach(r => {
+                    if (lang && lang.size > 0 && !lang.has(r.lg)) return;
+                    if (pos && pos.size > 0 && !pos.has(r.pos)) return;
+                    const sid = r.sense_id.toString();
+                    if (sense && sid !== sense) return;
+
+                    senseMap[sid] = {
+                        id: sid,
+                        l: r.lemma,
+                        lg: r.lg,
+                        c: r.synset_id,
+                        ind: r.ind,
+                        ontological_category: r.pos
+                    };
+                });
+
+                setLoadedSenses(prev => ({ ...prev, ...senseMap }));
+                setCurrentSearchSenseIds(new Set(Object.keys(senseMap)));
+                setLoadingResults(false);
+
+                if (sense) {
+                    setSynonymsCollapsed(prev => ({ ...prev, [sense]: false }));
+                }
+
+                // Load full sense data in background (batched)
+                const senseIds = Object.keys(senseMap);
+                const BATCH_SIZE = 50;
+                let i = 0;
+                const loadBatch = () => {
+                    if (i >= senseIds.length) return;
+                    const batch = senseIds.slice(i, i + BATCH_SIZE);
+                    const updates = {};
+                    batch.forEach(sid => {
+                        const full = querySense(parseInt(sid));
+                        if (full) updates[sid] = full;
+                    });
+                    setLoadedSenses(prev => ({ ...prev, ...updates }));
+                    i += BATCH_SIZE;
+                    if (i < senseIds.length) setTimeout(loadBatch, 0);
+                };
+                setTimeout(loadBatch, 0);
+                }, 0); // end deferred search
+            }, [dbReady]);
+
+            const handleSearch = () => {
+                if (!searchTerm.trim()) return;
+                const term = searchTerm.trim();
+                setCurrentSearch(term);
+                setSenseFilter(null);
+                setSynonymsCollapsed({});
+                performSearch(term, languageFilter, posFilter, null);
+            };
+
+            const handleKeyPress = (e) => { if (e.key === 'Enter') handleSearch(); };
+
+            // Initial search on DB ready
+            useEffect(() => {
+                if (dbReady && currentSearch && view === 'search') {
+                    performSearch(currentSearch, languageFilter, posFilter, senseFilter);
+                }
+            }, [dbReady]);
+
+            const getFilteredWordforms = () => {
+                if (!currentSearch) return [];
+                const results = [];
+                const ids = senseFilter ? [senseFilter] : [...currentSearchSenseIds];
+                for (const senseId of ids) {
+                    const sense = loadedSenses[senseId];
+                    if (!sense) continue;
+                    const lang = sense.lg;
+                    if (languageFilter.size > 0 && !languageFilter.has(lang)) continue;
+                    const pos = sense.ontological_category || getConceptData(sense.c?.toString())?.oc || 'UNK';
+                    if (posFilter.size > 0 && !posFilter.has(pos)) continue;
+                    results.push({ ...sense, id: senseId, ontological_category: pos });
+                }
+                return results;
+            };
+
+            // Navigation handlers
+            const handleConceptClick = (conceptId) => {
+                nodeSizeCache.current.clear();
+                setSelectedConcept(conceptId.toString());
+                setSelectedSense(null);
+                setView('concept');
+                setSynonymsCollapsed({});
+                setPathResult(null);
+                setPathNotFound(false);
+                setPathTargetIli('');
+                setPathTargetRowid(null);
+                loadConceptWithRelations(conceptId.toString());
+            };
+
+            const handleSenseClick = (senseId) => {
+                setSelectedSense(senseId.toString());
+                setSelectedConcept(null);
+                setView('sense');
+                setSynonymsCollapsed({});
+                loadSenseData(senseId.toString());
+            };
+
+            const handleWordformClick = (form) => {
+                setSearchTerm(form);
+                setCurrentSearch(form);
+                setView('search');
+                setSenseFilter(null);
+                setSynonymsCollapsed({});
+                performSearch(form, languageFilter, posFilter, null);
+            };
+
+            const handleWordformClickWithSense = (form, senseId) => {
+                setSearchTerm(form);
+                setCurrentSearch(form);
+                setView('search');
+                setSenseFilter(senseId?.toString());
+                setSynonymsCollapsed({});
+                setLanguageFilter(new Set());
+                setPosFilter(new Set());
+                performSearch(form, new Set(), new Set(), senseId?.toString());
+            };
+
+            const handleBackToSearch = () => {
+                setView('search');
+                setSelectedConcept(null);
+                setSelectedSense(null);
+                setSynonymsCollapsed({});
+            };
+
+            const handleLogoClick = () => {
+                setSearchTerm(''); setCurrentSearch(''); setView('search');
+                setSelectedConcept(null); setSelectedSense(null);
+                setLanguageFilter(new Set()); setPosFilter(new Set());
+                setSenseFilter(null); setCurrentSearchSenseIds(new Set()); setLoadedSenses({}); setLoadedConcepts({});
+                setSynonymsCollapsed({}); setActiveTab('browser');
+            };
+
+            const renderExample = (exampleHtml) => {
+                const div = document.createElement('div');
+                div.innerHTML = exampleHtml;
+                const parts = [];
+                div.childNodes.forEach((node, idx) => {
+                    if (node.nodeType === Node.TEXT_NODE) {
+                        if (node.textContent) parts.push(<span key={idx}>{node.textContent}</span>);
+                    } else if (node.nodeName === 'B') {
+                        parts.push(<strong key={idx}>{node.textContent}</strong>);
+                    }
+                });
+                return parts;
+            };
+
+            const renderDefinitionWithLinks = (definitionText, annotations) => {
+                if (!annotations || annotations.length === 0) return definitionText;
+                annotations.forEach(ann => {
+                    const sid = ann.s.toString();
+                    if (!loadedSenses[sid]) loadSenseData(sid);
+                });
+                const parts = [];
+                let lastIndex = 0;
+                const sorted = [...annotations].sort((a, b) => a.so - b.so);
+                sorted.forEach((ann, idx) => {
+                    if (ann.so > lastIndex) {
+                        parts.push(<span key={`text-${idx}`}>{definitionText.substring(lastIndex, ann.so)}</span>);
+                    }
+                    const text = definitionText.substring(ann.so, ann.eo);
+                    const linkedSense = loadedSenses[ann.s.toString()];
+                    if (linkedSense?.l) {
+                        parts.push(
+                            <button key={`link-${idx}`}
+                                onClick={(e) => { e.stopPropagation(); handleWordformClickWithSense(linkedSense.l, ann.s.toString()); }}
+                                className="text-blue-600 hover:underline cursor-pointer"
+                            >{text}</button>
+                        );
+                    } else {
+                        parts.push(<span key={`link-${idx}`} className="text-blue-600">{text}</span>);
+                    }
+                    lastIndex = ann.eo;
+                });
+                if (lastIndex < definitionText.length) {
+                    parts.push(<span key="text-end">{definitionText.substring(lastIndex)}</span>);
+                }
+                return parts;
+            };
+
+            const renderProvenance = (tableName, itemRowid) => {
+                if (!showProvenance || !provenanceReady) return null;
+                const rows = queryProvenance(tableName, itemRowid);
+                if (rows.length === 0) return null;
+                return (
+                    <span className="text-xs text-gray-400 ml-1">
+                        ({rows.map((s, i) => (
+                            <span key={s.code + (s.version || '')}>
+                                {i > 0 && ', '}
+                                <button
+                                    onClick={() => { setHighlightedResource(s.code); setActiveTab('wordnets'); }}
+                                    className="hover:text-blue-500 hover:underline"
+                                >{s.code}{s.version ? `:${s.version}` : ''}</button>
+                            </span>
+                        ))})
+                    </span>
+                );
+            };
+
+            const renderCompactProvenance = (tableName, rowid) => {
+                if (!showProvenance || !provenanceReady || !rowid) return null;
+                const rows = queryProvenance(tableName, rowid);
+                if (rows.length === 0) return null;
+                const first = rows[0];
+                const rest = rows.slice(1);
+                return (
+                    <span className="relative inline-block group text-xs text-gray-400 ml-1 cursor-default">
+                        (<button onClick={() => { setHighlightedResource(first.code); setActiveTab('wordnets'); }}
+                            className="hover:text-blue-500 hover:underline">
+                            {first.code}{first.version ? `:${first.version}` : ''}
+                        </button>{rest.length > 0 && <span> +{rest.length}</span>})
+                        {rest.length > 0 && (
+                            <span className="absolute bottom-full left-0 hidden group-hover:flex flex-col bg-white border border-gray-200 rounded shadow-lg text-xs p-1.5 z-10 whitespace-nowrap gap-0.5">
+                                {rows.map((s, i) => (
+                                    <button key={i} onClick={() => { setHighlightedResource(s.code); setActiveTab('wordnets'); }}
+                                        className="text-left hover:text-blue-500 hover:underline">
+                                        {s.code}{s.version ? `:${s.version}` : ''}
+                                    </button>
+                                ))}
+                            </span>
+                        )}
+                    </span>
+                );
+            };
+
+            const renderPronunciations = (prons) => {
+                if (!showPronunciation || !prons || prons.length === 0) return null;
+                return (
+                    <div className="text-xs text-gray-500 font-normal mt-0.5">
+                        {prons.map((p, i) => (
+                            <span key={i} className="mr-3">
+                                /{p.pronunciation}/{p.variety && <sup className="ml-0.5">{p.variety}</sup>}
+                            </span>
+                        ))}
+                    </div>
+                );
+            };
+
+            const hasActiveSettings = definitionLanguage !== 'en' || !showPronunciation || showProvenance || languageFilter.size > 0 || posFilter.size > 0;
+
+            // Concept graph
+            const relationsMap = relatedConcepts[selectedConcept];
+            let hasRelationsToDisplay = false;
+            if (relationsMap) {
+                for (const key in relationsMap) {
+                    if (Array.isArray(relationsMap[key]) && relationsMap[key].length > 0) {
+                        hasRelationsToDisplay = true;
+                        break;
+                    }
+                }
+            }
+
+            const getAvailableCategories = (conceptId) => {
+                const relations = relatedConcepts[conceptId];
+                if (!relations) return [];
+                const categories = categorizeRelations(relations);
+                const available = [];
+                if (categories.hypernyms.length > 0) available.push('hypernyms');
+                if (categories.hyponyms.length > 0) available.push('hyponyms');
+                if (categories.meronyms.length > 0) available.push('meronyms');
+                if (categories.holonyms.length > 0) available.push('holonyms');
+                if (categories.roles.length > 0) available.push('roles');
+                if (categories.inferences.length > 0) available.push('inferences');
+                if (categories.opposites.length > 0) available.push('opposites');
+                return available;
+            };
+
+            const handleCategorySelect = (conceptId, category) => {
+                const relations = relatedConcepts[conceptId];
+                if (!relations || isLoadingRelationsRef.current) return;
+
+                const newSelectedCategories = {...selectedCategories};
+                if (!newSelectedCategories[conceptId]) newSelectedCategories[conceptId] = new Set();
+                else newSelectedCategories[conceptId] = new Set(newSelectedCategories[conceptId]);
+
+                if (newSelectedCategories[conceptId].has(category)) {
+                    newSelectedCategories[conceptId].delete(category);
+                    if (newSelectedCategories[conceptId].size === 0) delete newSelectedCategories[conceptId];
+                } else {
+                    newSelectedCategories[conceptId].add(category);
+                }
+
+                const newVisibleNodes = new Set([selectedConcept]);
+                const queue = [selectedConcept];
+                const processed = new Set();
+                while (queue.length > 0) {
+                    const currentId = queue.shift();
+                    if (processed.has(currentId)) continue;
+                    processed.add(currentId);
+                    const catsForNode = newSelectedCategories[currentId];
+                    if (!catsForNode || catsForNode.size === 0) continue;
+                    const relationsForNode = relatedConcepts[currentId];
+                    if (!relationsForNode) continue;
+                    const categorizedRels = categorizeRelations(relationsForNode);
+                    catsForNode.forEach(cat => {
+                        if (categorizedRels[cat]) {
+                            categorizedRels[cat].forEach(rel => {
+                                if (!newVisibleNodes.has(rel.target)) {
+                                    newVisibleNodes.add(rel.target);
+                                    queue.push(rel.target);
+                                }
+                            });
+                        }
+                    });
+                }
+
+                setSelectedCategories(newSelectedCategories);
+                setVisibleNodes(newVisibleNodes);
+
+                if (simulationRef.current) simulationRef.current.stop();
+
+                // Load missing nodes
+                const nodesToLoad = Array.from(newVisibleNodes).filter(nid => !relatedConcepts[nid]);
+                if (nodesToLoad.length > 0) {
+                    isLoadingRelationsRef.current = true;
+                    const updates = {};
+                    nodesToLoad.forEach(nid => {
+                        loadConcept(nid);
+                        updates[nid] = loadConceptRelations(nid);
+                    });
+                    setRelatedConcepts(prev => ({...prev, ...updates}));
+                    isLoadingRelationsRef.current = false;
+                    if (simulationRef.current) simulationRef.current.alpha(0.2).restart();
+                }
+            };
+
+            // D3 concept graph effect
+            useEffect(() => {
+                if (view !== 'concept' || !selectedConcept || !relatedConcepts[selectedConcept] || relationsView !== 'graph') return;
+
+                const container = document.getElementById('concept-graph');
+                if (!container) return;
+
+                let rafId, timeoutId;
+                timeoutId = setTimeout(() => {
+                    const width = container.clientWidth;
+                    const height = 500;
+
+                    const isNewConcept = lastConceptRef.current !== selectedConcept;
+                    lastConceptRef.current = selectedConcept;
+
+                    // Build nodes and links
+                    const nodesMap = new Map();
+                    const linksArray = [];
+
+                    const addNode = (id) => {
+                        if (nodesMap.has(id)) return;
+                        const concept = loadedConcepts[id] || loadConcept(id);
+                        const pos = getPosName(concept?.oc || '');
+                        const lblInfo = getConceptLabel(parseInt(id), definitionLanguage);
+                        const labelBase = lblInfo?.form || concept?.d?.[definitionLanguage] || concept?.d?.en || '';
+                        const labelActualLang = lblInfo?.lang;
+                        const label = (labelActualLang && labelActualLang !== definitionLanguage)
+                            ? `${labelBase} [${labelActualLang}]` : labelBase;
+                        nodesMap.set(id, {
+                            id, label, pos,
+                            isCenter: id === selectedConcept
+                        });
+                    };
+
+                    addNode(selectedConcept);
+                    visibleNodes.forEach(nid => {
+                        if (!nodesMap.has(nid)) addNode(nid);
+                    });
+
+                    // Build links from relations
+                    visibleNodes.forEach(sourceId => {
+                        const rels = relatedConcepts[sourceId];
+                        if (!rels) return;
+                        for (const relType in rels) {
+                            rels[relType].forEach(targetId => {
+                                if (visibleNodes.has(targetId)) {
+                                    const shortCode = relType.startsWith('-') ? relType.substring(1) : relType;
+                                    linksArray.push({
+                                        source: sourceId, target: targetId,
+                                        type: relType,
+                                        color: relationColors[shortCode] || '#999'
+                                    });
+                                }
+                            });
+                        }
+                    });
+
+                    const nodesArray = Array.from(nodesMap.values());
+
+                    // Reuse or create SVG
+                    let svg = d3.select(container).select('svg');
+                    if (svg.empty() || isNewConcept) {
+                        d3.select(container).selectAll('*').remove();
+                        svg = d3.select(container).append('svg')
+                            .attr('width', width).attr('height', height)
+                            .style('border', '1px solid #e5e7eb')
+                            .style('border-radius', '0.5rem');
+                        svgRef.current = svg;
+
+                        const g = svg.append('g');
+                        gRef.current = g;
+
+                        const zoom = d3.zoom().scaleExtent([0.1, 4])
+                            .on('zoom', (event) => g.attr('transform', event.transform));
+                        svg.call(zoom);
+                        svg.call(zoom.transform, d3.zoomIdentity.translate(width/2, height/2).scale(0.8));
+
+                        g.append('g').attr('class', 'links');
+                        g.append('g').attr('class', 'nodes');
+                    }
+
+                    const g = gRef.current;
+
+                    // Force simulation
+                    const edgeLengthForce = (alpha) => {
+                        linksArray.forEach(link => {
+                            const source = typeof link.source === 'object' ? link.source : nodesMap.get(link.source);
+                            const target = typeof link.target === 'object' ? link.target : nodesMap.get(link.target);
+                            if (!source || !target) return;
+                            const dx = target.x - source.x;
+                            const dy = target.y - source.y;
+                            const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+                            const desired = 200;
+                            const strength = 0.1 * alpha;
+                            const diff = (dist - desired) / dist * strength;
+                            const mx = dx * diff * 0.5;
+                            const my = dy * diff * 0.5;
+                            source.x += mx; source.y += my;
+                            target.x -= mx; target.y -= my;
+                        });
+                    };
+                    edgeLengthForce.initialize = () => {};
+
+                    let simulation = simulationRef.current;
+                    if (!simulation || isNewConcept) {
+                        if (simulation) simulation.stop();
+                        simulation = d3.forceSimulation(nodesArray)
+                            .force('charge', d3.forceManyBody().strength(-300))
+                            .force('center', d3.forceCenter(0, 0).strength(0.05))
+                            .force('collision', d3.forceCollide().radius(80))
+                            .force('link', d3.forceLink(linksArray).id(d => d.id).distance(200).strength(0.3))
+                            .force('edgeLength', edgeLengthForce);
+                        simulationRef.current = simulation;
+                    } else {
+                        simulation.nodes(nodesArray);
+                        simulation.force('link').links(linksArray);
+                    }
+
+                    simulation.on('tick', () => {
+                        rafId = requestAnimationFrame(() => {
+                            // Update links
+                            const link = g.select('.links')
+                                .selectAll('line').data(linksArray, d => `${d.source.id || d.source}-${d.target.id || d.target}`);
+                            link.enter().append('line')
+                                .attr('stroke-width', 1.5).attr('stroke-opacity', 0.6)
+                                .merge(link)
+                                .attr('stroke', d => d.color)
+                                .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
+                                .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+                            link.exit().remove();
+
+                            // Update nodes
+                            const node = g.select('.nodes')
+                                .selectAll('g.node').data(nodesArray, d => d.id);
+
+                            const nodeEnter = node.enter().append('g').attr('class', 'node')
+                                .style('cursor', 'pointer')
+                                .call(d3.drag()
+                                    .on('start', (event, d) => {
+                                        if (!event.active) simulation.alphaTarget(0.1).restart();
+                                        d.fx = d.x; d.fy = d.y;
+                                    })
+                                    .on('drag', (event, d) => { d.fx = event.x; d.fy = event.y; })
+                                    .on('end', (event, d) => {
+                                        if (!event.active) simulation.alphaTarget(0);
+                                        d.fx = null; d.fy = null;
+                                    })
+                                )
+                                .on('click', (event, d) => { if (!d.isCenter) handleConceptClick(d.id); })
+                                .on('mouseenter', (event, d) => {
+                                    if (hoverTimeoutRef.current) {
+                                        clearTimeout(hoverTimeoutRef.current);
+                                        hoverTimeoutRef.current = null;
+                                    }
+                                    setHoveredNode(d.id);
+                                    const graphRect = container.getBoundingClientRect();
+                                    const svgPoint = svg.node().createSVGPoint();
+                                    const ctm = g.node().getCTM();
+                                    svgPoint.x = d.x + (d.width || 100);
+                                    svgPoint.y = d.y;
+                                    const screenPoint = svgPoint.matrixTransform(ctm);
+                                    setHoverMenuPositionRef.current({
+                                        x: Math.min(screenPoint.x, width - 180),
+                                        y: Math.max(0, Math.min(screenPoint.y, height - 200))
+                                    });
+                                })
+                                .on('mouseleave', () => {
+                                    hoverTimeoutRef.current = setTimeout(() => {
+                                        if (!menuInteractionRef.current) {
+                                            setHoveredNode(null);
+                                            setHoverMenuPositionRef.current(null);
+                                        }
+                                    }, 200);
+                                })
+                                .each(function(d) {
+                                    const nodeGroup = d3.select(this);
+                                    const maxWidth = d.isCenter ? 250 : 200;
+                                    const avgCharWidth = 7;
+                                    const maxCharsPerLine = Math.floor(maxWidth / avgCharWidth);
+                                    const labelWords = d.label.split(' ');
+                                    const lines = [];
+                                    let currentLine = '';
+                                    labelWords.forEach(word => {
+                                        if (currentLine.length + word.length + 1 <= maxCharsPerLine) {
+                                            currentLine += (currentLine ? ' ' : '') + word;
+                                        } else {
+                                            if (currentLine) lines.push(currentLine);
+                                            currentLine = word;
+                                        }
+                                    });
+                                    if (currentLine) lines.push(currentLine);
+                                    if (lines.length === 0) lines.push('');
+
+                                    const padding = 12;
+                                    const lineHeight = d.isCenter ? 18 : 17;
+                                    const posWidth = d.pos.length * avgCharWidth;
+                                    const posGap = 12;
+
+                                    const line0LabelWidth = lines[0].length * avgCharWidth;
+                                    let actualMaxWidth = line0LabelWidth + posGap + posWidth;
+                                    for (let i = 1; i < lines.length; i++) {
+                                        actualMaxWidth = Math.max(actualMaxWidth, lines[i].length * avgCharWidth);
+                                    }
+
+                                    const boxWidth = Math.min(actualMaxWidth + padding * 2, maxWidth + padding * 2);
+                                    const boxHeight = lines.length * lineHeight + padding * 2;
+
+                                    nodeGroup.append('rect')
+                                        .attr('width', boxWidth).attr('height', boxHeight)
+                                        .attr('x', 0).attr('y', 0)
+                                        .attr('fill', '#ffffff').attr('rx', 3);
+
+                                    const textGroup = nodeGroup.append('g').attr('transform', 'translate(12, 12)');
+                                    const firstLineY = lineHeight * 0.75;
+                                    textGroup.append('text')
+                                        .attr('x', 0).attr('y', firstLineY)
+                                        .attr('font-size', d.isCenter ? 15 : 14)
+                                        .text(lines[0]);
+                                    textGroup.append('text')
+                                        .attr('x', line0LabelWidth + posGap).attr('y', firstLineY)
+                                        .attr('font-size', d.isCenter ? 15 : 14)
+                                        .attr('font-style', 'italic')
+                                        .text(d.pos);
+                                    for (let i = 1; i < lines.length; i++) {
+                                        textGroup.append('text')
+                                            .attr('x', 0).attr('y', firstLineY + i * lineHeight)
+                                            .attr('font-size', d.isCenter ? 15 : 14)
+                                            .text(lines[i]);
+                                    }
+
+                                    d.width = boxWidth;
+                                    d.height = boxHeight;
+                                });
+
+                            nodeEnter.merge(node)
+                                .attr('transform', d => `translate(${d.x - (d.width || 0)/2}, ${d.y - (d.height || 0)/2})`);
+                            node.select('rect')
+                                .attr('stroke', d => d.isCenter ? '#000000' : '#d1d5db')
+                                .attr('stroke-width', d => d.isCenter ? 2 : 1);
+                            node.exit().remove();
+
+                            simulation.nodes(nodesArray);
+                            simulation.force('link').links(linksArray);
+                        });
+                    });
+
+                    simulation.alpha(isNewConcept ? 0.3 : 0.1).restart();
+                }, 50);
+
+                return () => {
+                    if (rafId) cancelAnimationFrame(rafId);
+                    if (timeoutId) clearTimeout(timeoutId);
+                };
+            }, [selectedConcept, relatedConcepts, view, visibleNodes, loadedConcepts, relationsView]);
+
+            useEffect(() => {
+                return () => {
+                    if (simulationRef.current) simulationRef.current.stop();
+                    nodeSizeCache.current.clear();
+                };
+            }, []);
+
+            const allPosValues = ['NOUN', 'VERB', 'ADJ', 'ADV', 'CONJ', 'ADP', 'NREF', 'UNK'];
+
+            // Loading / error states
+            if (dbError) {
+                return (
+                    <div className="min-h-screen bg-white flex items-center justify-center p-4">
+                        <div className="max-w-md">
+                            <h2 className="font-bold text-xl mb-2">Error Loading Database</h2>
+                            <p className="mb-4">{dbError}</p>
+                            <p className="text-sm text-gray-600">
+                                Make sure cygnet.db.gz is in the same directory as this HTML file.
+                            </p>
+                        </div>
+                    </div>
+                );
+            }
+
+            if (!dbReady) {
+                return (
+                    <div className="min-h-screen bg-white flex items-center justify-center p-4">
+                        <div className="text-center w-72">
+                            <h1 className="text-4xl mb-4">🦢</h1>
+                            <p className="text-gray-600 mb-3">{dbProgress || 'Initializing...'}</p>
+                            {downloadProgress && (
+                                <div>
+                                    <div className="w-full bg-gray-200 rounded-full h-2 mb-1">
+                                        <div className="bg-blue-500 h-2 rounded-full transition-all"
+                                            style={{ width: `${Math.min(100, (downloadProgress.loaded / (downloadProgress.compressedTotal * 2.5)) * 100).toFixed(0)}%` }} />
+                                    </div>
+                                    <p className="text-xs text-gray-500">{(downloadProgress.loaded / 1048576).toFixed(0)} MB decompressed</p>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                );
+            }
+
+            // Group results
+            const filteredResults = getFilteredWordforms();
+            const groupedByLanguageAndPos = {};
+            filteredResults.forEach(sense => {
+                const lang = sense.lg;
+                const conceptId = sense.c?.toString();
+                const concept = conceptId ? (getConceptData(conceptId) || loadConcept(conceptId)) : null;
+                const pos = concept?.oc || sense.ontological_category || 'UNK';
+                if (!groupedByLanguageAndPos[lang]) groupedByLanguageAndPos[lang] = {};
+                if (!groupedByLanguageAndPos[lang][pos]) groupedByLanguageAndPos[lang][pos] = [];
+                const existing = groupedByLanguageAndPos[lang][pos].find(g => g.conceptId === conceptId);
+                if (existing) existing.senses.push(sense);
+                else groupedByLanguageAndPos[lang][pos].push({ conceptId, senses: [sense] });
+            });
+
+            return (
+                <div className="min-h-screen bg-gray-50 flex flex-col">
+                    <header className="bg-white border-b border-gray-200 sticky top-0 z-10">
+                        <div className="max-w-4xl mx-auto px-4 py-3">
+                            <div className="flex items-center justify-between">
+                                <div className="flex items-center gap-3">
+                                    <button onClick={handleLogoClick} className="text-left hover:opacity-80 flex items-center gap-1.5">
+                                        <h1 className="text-4xl -mt-0.5">🦢</h1>
+                                        <h1 className="text-3xl font-bold text-gray-800"> Cygnet</h1>
+                                    </button>
+                                    <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded mt-1">SQL</span>
+                                </div>
+                            </div>
+                            <nav className="flex items-end gap-3 mt-3 -mb-3">
+                                {['browser', 'python', 'data', 'about', 'publications', 'wordnets'].map(tab => (
+                                    <button key={tab}
+                                        onClick={() => setActiveTab(tab)}
+                                        className={`px-4 py-2 rounded-t-lg border-b-2 transition-colors ${
+                                            activeTab === tab
+                                                ? 'bg-gray-50 border-blue-500 text-blue-700 font-medium'
+                                                : 'border-transparent text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                                        }`}
+                                    >{tab.charAt(0).toUpperCase() + tab.slice(1)}</button>
+                                ))}
+                                <div className="ml-auto relative pb-0" ref={settingsRef}>
+                                    <button onClick={() => setSettingsOpen(o => !o)}
+                                        title="Settings"
+                                        className={`px-3 py-2 rounded-t-lg border-b-2 transition-colors relative ${settingsOpen ? 'bg-gray-50 border-blue-500 text-blue-700' : 'border-transparent text-gray-600 hover:text-gray-900 hover:bg-gray-50'}`}>
+                                        ⚙
+                                        {hasActiveSettings && <span className="absolute top-1.5 right-1 w-1.5 h-1.5 bg-blue-500 rounded-full" />}
+                                    </button>
+                                    {settingsOpen && (
+                                        <div className="absolute right-0 top-full mt-1 bg-white border border-gray-200 rounded shadow-lg z-20 w-80 max-h-[80vh] overflow-y-auto">
+                                            <div className="p-4 space-y-4">
+                                                <div>
+                                                    <h4 className="font-semibold text-gray-500 mb-2 text-xs uppercase tracking-wide">General</h4>
+                                                    <div className="space-y-2 pl-1">
+                                                        <div className="flex items-center gap-2">
+                                                            <label className="text-sm text-gray-600 whitespace-nowrap">Display results in</label>
+                                                            <select value={definitionLanguage}
+                                                                onChange={(e) => setDefinitionLanguage(e.target.value)}
+                                                                className="px-2 py-0.5 border border-gray-300 rounded text-sm flex-grow min-w-0"
+                                                            >
+                                                                <option value="en">English</option>
+                                                                {allLanguages.filter(l => l !== 'en')
+                                                                    .sort((a, b) => getLangName(a).localeCompare(getLangName(b)))
+                                                                    .map(lang => <option key={lang} value={lang}>{getLangFullName(lang)}</option>)}
+                                                            </select>
+                                                        </div>
+                                                        {definitionLanguage !== 'en' && (
+                                                            <p className="text-xs text-gray-400 pl-1">Labels and definitions fall back to English if unavailable</p>
+                                                        )}
+                                                        <label className="flex items-center gap-2 cursor-pointer">
+                                                            <input type="checkbox" checked={showPronunciation}
+                                                                onChange={e => { setShowPronunciation(e.target.checked); localStorage.setItem('showPronunciation', e.target.checked); }}
+                                                                className="cursor-pointer" />
+                                                            <span className="text-sm text-gray-600">Show pronunciation</span>
+                                                        </label>
+                                                        <div className="flex items-center gap-2">
+                                                            <label className="text-sm text-gray-600 whitespace-nowrap">Related concepts</label>
+                                                            <select value={relationsView}
+                                                                onChange={e => { setRelationsView(e.target.value); localStorage.setItem('relationsView', e.target.value); }}
+                                                                className="px-2 py-0.5 border border-gray-300 rounded text-sm">
+                                                                <option value="graph">Graph</option>
+                                                                <option value="text">Text</option>
+                                                                <option value="none">Hidden</option>
+                                                            </select>
+                                                        </div>
+                                                        <label className="flex items-center gap-2 cursor-pointer">
+                                                            <input type="checkbox" checked={showProvenance}
+                                                                onChange={e => {
+                                                                    setShowProvenance(e.target.checked);
+                                                                    localStorage.setItem('showProvenance', e.target.checked);
+                                                                    if (e.target.checked && !_provDb && !provLoading) loadProvenanceDb();
+                                                                }}
+                                                                className="cursor-pointer" />
+                                                            <span className="text-sm text-gray-600">Show provenance</span>
+                                                            {showProvenance && provLoading && <span className="text-xs text-gray-400 ml-1">Loading...</span>}
+                                                            {showProvenance && provError && <span className="text-xs text-red-500 ml-1">{provError}</span>}
+                                                        </label>
+                                                    </div>
+                                                </div>
+                                                <hr className="border-gray-200" />
+                                                <div>
+                                                    <h4 className="font-semibold text-gray-500 mb-2 text-xs uppercase tracking-wide">Search filters</h4>
+                                                    <div className="space-y-3 pl-1">
+                                                        <div>
+                                                            <div className="flex items-center gap-2 mb-1">
+                                                                <span className="text-sm text-gray-600">Language</span>
+                                                                {languageFilter.size > 0 && (
+                                                                    <button onClick={() => { setLanguageFilter(new Set()); if (currentSearch) performSearch(currentSearch, new Set(), posFilter, senseFilter); }}
+                                                                        className="text-xs text-blue-600 hover:underline">clear</button>
+                                                                )}
+                                                            </div>
+                                                            <div className="flex flex-wrap gap-2">
+                                                                {allLanguages.sort((a, b) => getLangName(a).localeCompare(getLangName(b))).map(lang => (
+                                                                    <label key={lang} className="flex items-center gap-1 cursor-pointer">
+                                                                        <input type="checkbox" checked={languageFilter.has(lang)}
+                                                                            onChange={() => {
+                                                                                const nf = new Set(languageFilter);
+                                                                                nf.has(lang) ? nf.delete(lang) : nf.add(lang);
+                                                                                setLanguageFilter(nf);
+                                                                                setSenseFilter(null);
+                                                                                if (currentSearch) performSearch(currentSearch, nf, posFilter, null);
+                                                                            }} className="cursor-pointer" />
+                                                                        <span className="text-xs">{getLangFullName(lang)}</span>
+                                                                    </label>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+                                                        <div>
+                                                            <div className="flex items-center gap-2 mb-1">
+                                                                <span className="text-sm text-gray-600">Part of speech</span>
+                                                                {posFilter.size > 0 && (
+                                                                    <button onClick={() => { setPosFilter(new Set()); if (currentSearch) performSearch(currentSearch, languageFilter, new Set(), senseFilter); }}
+                                                                        className="text-xs text-blue-600 hover:underline">clear</button>
+                                                                )}
+                                                            </div>
+                                                            <div className="flex flex-wrap gap-2">
+                                                                {allPosValues.map(pos => (
+                                                                    <label key={pos} className="flex items-center gap-1 cursor-pointer">
+                                                                        <input type="checkbox" checked={posFilter.has(pos)}
+                                                                            onChange={() => {
+                                                                                const nf = new Set(posFilter);
+                                                                                nf.has(pos) ? nf.delete(pos) : nf.add(pos);
+                                                                                setPosFilter(nf);
+                                                                                setSenseFilter(null);
+                                                                                if (currentSearch) performSearch(currentSearch, languageFilter, nf, null);
+                                                                            }} className="cursor-pointer" />
+                                                                        <span className="text-xs">{getPosName(pos, true)}</span>
+                                                                    </label>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                            </nav>
+                        </div>
+                    </header>
+
+                    <main className="w-full max-w-4xl mx-auto px-4 pt-6 pb-4 flex-grow">
+                        {activeTab === 'browser' && (
+                            <div>
+                                {view === 'search' && (
+                                    <div className="mb-8">
+                                        {!senseFilter && (
+                                            <div className="flex items-center gap-2">
+                                                <input type="text" value={searchTerm}
+                                                    onChange={(e) => setSearchTerm(e.target.value)}
+                                                    onKeyPress={handleKeyPress}
+                                                    placeholder="word, hot*, *ness, i1234, def:bright"
+                                                    className="flex-grow px-3 py-2 border border-gray-300 rounded"
+                                                />
+                                                <div className="relative group flex-shrink-0">
+                                                    <button className="w-6 h-6 rounded-full border border-gray-400 text-gray-500 text-xs font-bold hover:border-blue-500 hover:text-blue-500 flex items-center justify-center">ℹ</button>
+                                                    <div className="absolute right-0 top-full mt-1 hidden group-hover:block bg-white border border-gray-200 rounded shadow-lg p-3 text-xs text-gray-700 z-30 w-64 space-y-1.5">
+                                                        <div><span className="font-mono font-semibold">word</span> — exact match</div>
+                                                        <div><span className="font-mono font-semibold">hot*</span> or <span className="font-mono font-semibold">*ness</span> — glob (<span className="font-mono">*</span> = any characters, <span className="font-mono">?</span> = one)</div>
+                                                        <div><span className="font-mono font-semibold">i1234</span> or <span className="font-mono font-semibold">cili.i1234</span> — look up concept by ILI</div>
+                                                        <div><span className="font-mono font-semibold">def:word</span> — search inside definitions</div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        )}
+
+
+                                        {senseFilter && (
+                                            <div className="mb-4 bg-blue-50 border border-blue-200 rounded p-4">
+                                                <div className="flex items-center justify-between">
+                                                    <span className="text-base text-gray-700">Filtered to a single sense</span>
+                                                    <button onClick={() => { setSenseFilter(null); performSearch(currentSearch, languageFilter, posFilter, null); }}
+                                                        className="text-sm text-blue-600 hover:underline font-medium">Clear filter</button>
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {loadingResults && (
+                                            <div className="flex items-center gap-3 py-6 text-gray-500">
+                                                <svg className="animate-spin h-5 w-5 flex-shrink-0" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                                                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+                                                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+                                                </svg>
+                                                <span>Searching{detectSearchMode(currentSearch) !== 'exact' ? ' — this may take a moment…' : '…'}</span>
+                                            </div>
+                                        )}
+
+                                        {!loadingResults && currentSearch && filteredResults.length === 0 && (
+                                            <div className="text-center py-8"><p className="text-gray-600">No results found for <span className="font-mono">{currentSearch}</span></p></div>
+                                        )}
+
+                                        {!loadingResults && currentSearch && filteredResults.length > 0 && (() => {
+                                            const nLangs = Object.keys(groupedByLanguageAndPos).length;
+                                            const showHint = filteredResults.length > 100 && (languageFilter.size === 0 || posFilter.size === 0);
+                                            return (<>
+                                            <div className="mt-4 mb-1 flex items-center gap-3 flex-wrap">
+                                                <span className="text-sm text-gray-500">
+                                                    {filteredResults.length.toLocaleString()} {filteredResults.length === 1 ? 'result' : 'results'}
+                                                    {' across '}{nLangs} {nLangs === 1 ? 'language' : 'languages'}
+                                                </span>
+                                                {showHint && (
+                                                    <span className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-0.5">
+                                                        Too many results? Use the Language or POS filters in ⚙ Settings to narrow down.
+                                                    </span>
+                                                )}
+                                            </div>
+                                            <div className="space-y-6 mt-2">
+                                                {Object.entries(groupedByLanguageAndPos)
+                                                    .sort(([a], [b]) => getLangName(a).localeCompare(getLangName(b)))
+                                                    .map(([lang, posByLang]) => (
+                                                    <div key={lang} className="bg-white rounded shadow">
+                                                        <button onClick={() => toggleSection(`lang-${lang}`)}
+                                                            className="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-50">
+                                                            <h3 className="text-lg font-bold text-gray-800" title={getLangFullName(lang)}>{getLangName(lang)}</h3>
+                                                            <span className="text-gray-500">{collapsedSections[`lang-${lang}`] ? '▶' : '▼'}</span>
+                                                        </button>
+                                                        {!collapsedSections[`lang-${lang}`] && (
+                                                            <div className="px-4 pb-4 space-y-4">
+                                                                {Object.entries(posByLang)
+                                                                    .sort(([a], [b]) => {
+                                                                        const order = ['NOUN','VERB','ADJ','ADV','CONJ','ADP','NREF','UNK'];
+                                                                        return order.indexOf(a) - order.indexOf(b);
+                                                                    })
+                                                                    .map(([pos, groups]) => (
+                                                                    <div key={pos} className="pl-1">
+                                                                        {!senseFilter && (
+                                                                            <button onClick={() => toggleSection(`pos-${lang}-${pos}`)}
+                                                                                className="w-full flex items-center justify-between py-2 hover:bg-gray-50">
+                                                                                <h4 className="font-semibold text-gray-700">{getPosName(pos, true)}</h4>
+                                                                                <span className="text-gray-400 text-sm">{collapsedSections[`pos-${lang}-${pos}`] ? '▶' : '▼'}</span>
+                                                                            </button>
+                                                                        )}
+                                                                        {(!collapsedSections[`pos-${lang}-${pos}`] || senseFilter) && (
+                                                                            <div className="space-y-3 mt-2">
+                                                                                {groups.map((group, idx) => {
+                                                                                    const concept = getConceptData(group.conceptId);
+                                                                                    return (
+                                                                                        <div key={idx} className="space-y-2">
+                                                                                            {group.senses.map(sense => {
+                                                                                                const synonyms = [];
+                                                                                                if (concept?.s?.[lang]) {
+                                                                                                    concept.s[lang].forEach(senseId => {
+                                                                                                        const sid = senseId.toString();
+                                                                                                        const other = loadedSenses[sid];
+                                                                                                        if (other && sid !== sense.id.toString() && other.l !== sense.l) {
+                                                                                                            synonyms.push(other.l);
+                                                                                                        }
+                                                                                                    });
+                                                                                                }
+                                                                                                const defEntry = concept?.d ? (concept.d[definitionLanguage] ? [concept.d[definitionLanguage], definitionLanguage] : concept.d.en ? [concept.d.en, 'en'] : Object.entries(concept.d)[0] ? [Object.values(concept.d)[0], Object.keys(concept.d)[0]] : ['', null]) : ['', null];
+                                                                                                const [definition, defLang] = defEntry;
+                                                                                                const defIsFallback = defLang && defLang !== definitionLanguage;
+                                                                                                const hasExtra = !!(sense.v?.length || synonyms.length || sense.ex?.length);
+                                                                                                return (
+                                                                                                    <div key={sense.id}
+                                                                                                        className={`bg-gray-50 p-3 rounded border border-gray-200 sense-box ${hasExtra ? 'hover:border-blue-400 cursor-pointer' : ''}`}
+                                                                                                        onClick={hasExtra ? () => toggleSynonyms(sense.id) : undefined}>
+                                                                                                        <div className="flex items-start justify-between gap-2">
+                                                                                                            <div className="flex-grow flex items-start gap-2">
+                                                                                                                <div className="flex-shrink-0 py-1">
+                                                                                                                    <strong className="text-base">{sense.l}<sub>{sense.ind}</sub></strong>
+                                                                                                                    {renderPronunciations(sense.p)}
+                                                                                                                </div>
+                                                                                                                <div onClick={(e) => { e.stopPropagation(); handleConceptClick(group.conceptId); }}
+                                                                                                                    className="bg-white px-2 py-1 rounded border border-gray-300 hover:border-blue-400 hover:shadow-sm transition-all text-left cursor-pointer flex-shrink concept-inner">
+                                                                                                                    <span className="text-base">
+                                                                                                                        {(() => { const li = getConceptLabel(parseInt(group.conceptId), definitionLanguage); return li ? <><span className="font-semibold text-gray-800">{li.form}</span>{li.lang !== definitionLanguage && <span className="text-xs text-gray-400 ml-0.5">[{li.lang}]</span>}{' · '}</> : null; })()}
+                                                                                                                        <span className="text-gray-600 italic">{getPosName(pos)}.</span>
+                                                                                                                        {' '}<span className="text-gray-700">{definition}</span>{defIsFallback && <span className="text-xs text-gray-400 ml-1">[{defLang}]</span>}
+                                                                                                                    </span>
+                                                                                                                </div>
+                                                                                                            </div>
+                                                                                                            {hasExtra && (
+                                                                                                                <div className="text-gray-500 text-sm pt-1 flex-shrink-0">
+                                                                                                                    {synonymsCollapsed[sense.id] === false ? '▼' : '▶'}
+                                                                                                                </div>
+                                                                                                            )}
+                                                                                                        </div>
+                                                                                                        {synonymsCollapsed[sense.id] === false && (
+                                                                                                            <div className="mt-2 space-y-2">
+                                                                                                                {sense.v && sense.v.length > 0 && (
+                                                                                                                    <div className="text-sm text-gray-600">
+                                                                                                                        <span className="font-medium">Variants:</span>{' '}
+                                                                                                                        {sense.v.map((variant, vi) => (
+                                                                                                                            <span key={vi}>{vi > 0 && ', '}
+                                                                                                                                <span onClick={(e) => { e.stopPropagation(); handleWordformClick(variant); }}
+                                                                                                                                    className="text-blue-600 hover:underline cursor-pointer">{variant}</span>
+                                                                                                                            </span>
+                                                                                                                        ))}
+                                                                                                                    </div>
+                                                                                                                )}
+                                                                                                                {synonyms.length > 0 && (
+                                                                                                                    <div className="text-sm text-gray-600">
+                                                                                                                        <span className="font-medium">Synonyms:</span>{' '}
+                                                                                                                        {synonyms.map((syn, si) => (
+                                                                                                                            <span key={si}>{si > 0 && ', '}
+                                                                                                                                <span onClick={(e) => { e.stopPropagation(); handleWordformClick(syn); }}
+                                                                                                                                    className="text-blue-600 hover:underline cursor-pointer">{syn}</span>
+                                                                                                                            </span>
+                                                                                                                        ))}
+                                                                                                                    </div>
+                                                                                                                )}
+                                                                                                                {sense.ex && sense.ex.length > 0 && (
+                                                                                                                    <div className="text-sm text-gray-600">
+                                                                                                                        <span className="font-medium">Examples:</span>{' '}
+                                                                                                                        {sense.ex.map((ex, ei) => (
+                                                                                                                            <span key={ei}>{ei > 0 && '; '}"{renderExample(ex)}"</span>
+                                                                                                                        ))}
+                                                                                                                    </div>
+                                                                                                                )}
+                                                                                                            </div>
+                                                                                                        )}
+                                                                                                    </div>
+                                                                                                );
+                                                                                            })}
+                                                                                        </div>
+                                                                                    );
+                                                                                })}
+                                                                            </div>
+                                                                        )}
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                            </>);
+                                        })()}
+                                    </div>
+                                )}
+
+                                {view === 'concept' && selectedConcept && (() => {
+                                    const concept = getConceptData(selectedConcept) || loadConcept(selectedConcept);
+                                    if (!concept) return <div className="text-gray-600">Loading concept...</div>;
+
+                                    // Load senses
+                                    if (concept.s) {
+                                        Object.values(concept.s).flat().forEach(sid => {
+                                            if (!loadedSenses[sid.toString()]) loadSenseData(sid.toString());
+                                        });
+                                    }
+
+                                    const mainDefEntry = concept.d
+                                        ? (concept.d[definitionLanguage] ? [concept.d[definitionLanguage], definitionLanguage]
+                                            : concept.d.en ? [concept.d.en, 'en']
+                                            : Object.entries(concept.d)[0] || ['(No definition available)', null])
+                                        : ['(No definition available)', null];
+                                    const [mainDef, shownLang] = mainDefEntry;
+                                    const mainDefIsFallback = shownLang && shownLang !== definitionLanguage;
+                                    const altDefs = concept.d ? Object.entries(concept.d).filter(([l]) => l !== shownLang) : [];
+
+                                    const conceptLabelInfo = getConceptLabel(parseInt(selectedConcept), definitionLanguage);
+                                    const conceptLabel = conceptLabelInfo?.form || '';
+
+                                    return (
+                                        <div>
+                                            <button onClick={handleBackToSearch} className="mb-4 text-blue-600 hover:underline">← Back to search</button>
+                                            <div className="mb-4">
+                                                <p className="text-base">
+                                                    {conceptLabel && <><span className="font-medium">{conceptLabel}</span>{' \u2014 '}</>}<span className="text-gray-600 italic">{getPosName(concept.oc)}.</span>{' '}
+                                                    {concept.da ? renderDefinitionWithLinks(mainDef, concept.da) : mainDef}
+                                                    {mainDefIsFallback && <span className="text-xs text-gray-400 ml-1">[{shownLang}]</span>}
+                                                    {concept.dr?.[shownLang] && renderProvenance('definitions', concept.dr[shownLang])}
+                                                    {concept.ili && <span className="text-sm ml-2">⟪{concept.ili}⟫</span>}
+                                                </p>
+                                                {(() => {
+                                                    const enExamples = (concept.s?.en || []).flatMap(sid => loadedSenses[sid.toString()]?.ex || []);
+                                                    return enExamples.length > 0 && (
+                                                        <p className="text-sm italic mt-1">
+                                                            {enExamples.map((ex, ei) => (
+                                                                <span key={ei}>{ei > 0 && '; '}{renderExample(ex)}</span>
+                                                            ))}
+                                                        </p>
+                                                    );
+                                                })()}
+                                            </div>
+
+                                            {(relationsMap && hasRelationsToDisplay) && (() => {
+                                                // Sense relations: collect from all senses in this concept
+                                                const allSenseIds = concept.s ? Object.values(concept.s).flat().map(s => s.toString()) : [];
+                                                const senseRelsByType = {};
+                                                allSenseIds.forEach(sid => {
+                                                    const sd = loadedSenses[sid];
+                                                    if (!sd?.sr) return;
+                                                    sd.sr.forEach(rel => {
+                                                        const toId = rel.to.toString();
+                                                        if (!loadedSenses[toId]) loadSenseData(toId);
+                                                        if (!senseRelsByType[rel.t]) senseRelsByType[rel.t] = [];
+                                                        senseRelsByType[rel.t].push({ fromLemma: sd.l, toSenseId: toId, rid: rel.rid });
+                                                    });
+                                                });
+                                                const hasSenseRels = Object.keys(senseRelsByType).length > 0;
+
+                                                return (
+                                                <div className="mb-4">
+                                                    <div className="flex items-center gap-3 mb-2">
+                                                        <h3 className="font-bold text-base">Related Concepts</h3>
+                                                        <div className="flex rounded border border-gray-300 overflow-hidden text-xs">
+                                                            {['graph','text','none'].map(mode => (
+                                                                <button key={mode}
+                                                                    onClick={() => { setRelationsView(mode); localStorage.setItem('relationsView', mode); }}
+                                                                    className={`px-2 py-0.5 transition-colors ${relationsView === mode ? 'bg-blue-500 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>
+                                                                    {mode.charAt(0).toUpperCase() + mode.slice(1)}
+                                                                </button>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                    {relationsView === 'graph' && <div style={{ position: 'relative', overflow: 'hidden' }}>
+                                                        <div id="concept-graph" style={{ width: '100%', height: '500px' }} />
+                                                        <div className="text-sm text-gray-600 italic mt-2">Hover over a node to expand its relations.</div>
+                                                        {hoveredNode && hoverMenuPosition && (
+                                                            <div style={{
+                                                                position: 'absolute', left: hoverMenuPosition.x, top: hoverMenuPosition.y,
+                                                                zIndex: 1000, pointerEvents: 'auto',
+                                                                maxWidth: `calc(100% - ${hoverMenuPosition.x}px)`,
+                                                                maxHeight: `${500 - hoverMenuPosition.y}px`, overflow: 'hidden'
+                                                            }}>
+                                                                <div ref={menuRef}
+                                                                    onMouseEnter={() => { if (hoverTimeoutRef.current) { clearTimeout(hoverTimeoutRef.current); hoverTimeoutRef.current = null; } }}
+                                                                    onMouseLeave={() => { hoverTimeoutRef.current = setTimeout(() => { setHoveredNode(null); setHoverMenuPosition(null); }, 100); }}
+                                                                    className="bg-white border-2 border-gray-400 rounded shadow-lg p-2 text-sm min-w-[150px]">
+                                                                    <div className="font-semibold mb-2 text-gray-700 text-xs">Relations:</div>
+                                                                    {getAvailableCategories(hoveredNode).map(category => {
+                                                                        const isSelected = selectedCategories[hoveredNode]?.has(category);
+                                                                        return (
+                                                                            <button key={category} onClick={() => handleCategorySelect(hoveredNode, category)}
+                                                                                className={`block w-full text-left px-2 py-1 rounded flex items-center gap-2 ${isSelected ? 'bg-blue-100 text-blue-700' : 'hover:bg-gray-100'}`}>
+                                                                                <span className="w-4">{isSelected ? '☑' : '☐'}</span>
+                                                                                <span>{category.charAt(0).toUpperCase() + category.slice(1)}</span>
+                                                                            </button>
+                                                                        );
+                                                                    })}
+                                                                    {getAvailableCategories(hoveredNode).length === 0 && (
+                                                                        <div className="text-gray-500 italic px-2">No relations</div>
+                                                                    )}
+                                                                </div>
+                                                            </div>
+                                                        )}
+                                                    </div>}
+                                                    {relationsView === 'text' && (
+                                                        <div className="space-y-1.5 text-sm ml-1">
+                                                            {concept.cr && Object.entries(
+                                                                concept.cr.reduce((acc, rel) => {
+                                                                    if (!acc[rel.t]) acc[rel.t] = [];
+                                                                    acc[rel.t].push(rel);
+                                                                    return acc;
+                                                                }, {})
+                                                            ).map(([relType, rels]) => (
+                                                                <div key={relType} className="flex gap-2 flex-wrap items-baseline">
+                                                                    <span className="text-gray-500 italic flex-shrink-0">{relationNames[relType] || relType}:</span>
+                                                                    {rels.map(rel => {
+                                                                        const li = getConceptLabel(parseInt(rel.to), definitionLanguage);
+                                                                        return (
+                                                                            <span key={rel.to} className="inline-flex items-baseline gap-0.5">
+                                                                                <button onClick={() => handleConceptClick(rel.to)}
+                                                                                    className="text-blue-600 hover:underline">
+                                                                                    {li?.form || `#${rel.to}`}
+                                                                                    {li?.lang && li.lang !== definitionLanguage && <span className="text-gray-400 text-xs ml-0.5">[{li.lang}]</span>}
+                                                                                </button>
+                                                                                {renderCompactProvenance('synsets', rel.to)}
+                                                                            </span>
+                                                                        );
+                                                                    })}
+                                                                </div>
+                                                            ))}
+                                                            {hasSenseRels && Object.entries(senseRelsByType).map(([relType, rels]) => (
+                                                                <div key={`sr-${relType}`} className="flex gap-2 flex-wrap items-baseline">
+                                                                    <span className="text-gray-500 italic flex-shrink-0">{relationNames[relType] || relType}:</span>
+                                                                    {rels.map(({ fromLemma, toSenseId, rid }, i) => {
+                                                                        const toSense = loadedSenses[toSenseId];
+                                                                        const cid = toSense?.c?.toString();
+                                                                        const li = cid ? getConceptLabel(parseInt(cid), definitionLanguage) : null;
+                                                                        const conceptLabel = li?.form;
+                                                                        return (
+                                                                            <span key={i} className="inline-flex items-baseline gap-0.5 whitespace-nowrap">
+                                                                                <button onClick={() => toSense?.l && handleWordformClickWithSense(toSense.l, toSenseId)}
+                                                                                    className="text-blue-600 hover:underline">
+                                                                                    {toSense?.l || '…'}
+                                                                                </button>
+                                                                                {conceptLabel && conceptLabel !== toSense?.l && (
+                                                                                    <span className="text-gray-500">
+                                                                                        ({conceptLabel}{li.lang !== definitionLanguage && <span className="text-gray-400 text-xs ml-0.5">[{li.lang}]</span>})
+                                                                                    </span>
+                                                                                )}
+                                                                                {li?.lang && li.lang !== definitionLanguage && conceptLabel === toSense?.l && (
+                                                                                    <span className="text-gray-400 text-xs">[{li.lang}]</span>
+                                                                                )}
+                                                                                {renderCompactProvenance('senses', parseInt(toSenseId))}
+                                                                            </span>
+                                                                        );
+                                                                    })}
+                                                                </div>
+                                                            ))}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                                );
+                                            })()}
+
+                                            {(() => {
+                                                const fromIli = concept.ili;
+                                                if (!fromIli) return null;
+                                                const runPath = (toRowid) => {
+                                                    const fromRowid = parseInt(selectedConcept);
+                                                    const result = findPath(fromRowid, toRowid);
+                                                    setPathResult(result);
+                                                    setPathNotFound(result === null);
+                                                };
+                                                const targetLabel = pathTargetRowid ? getConceptLabel(pathTargetRowid, definitionLanguage) : null;
+                                                return (
+                                                <div className="mb-4">
+                                                    <h3 className="font-bold mb-2 text-base">Path to concept</h3>
+                                                    <div className="flex gap-2 mb-2 items-center">
+                                                        <input
+                                                            type="text"
+                                                            value={pathTargetIli}
+                                                            onChange={e => {
+                                                                const q = e.target.value.trim();
+                                                                setPathTargetIli(e.target.value);
+                                                                setPathResult(null);
+                                                                setPathNotFound(false);
+                                                                const norm = q.replace(/^cili\./, '');
+                                                                if (/^i\d+$/.test(norm)) {
+                                                                    const rows = cachedExec('SELECT rowid FROM synsets WHERE ili = ?', [norm]);
+                                                                    setPathTargetRowid(rows[0]?.rowid || null);
+                                                                } else {
+                                                                    setPathTargetRowid(null);
+                                                                }
+                                                            }}
+                                                            onKeyDown={e => { if (e.key === 'Enter' && pathTargetRowid) runPath(pathTargetRowid); }}
+                                                            placeholder={`e.g. i${fromIli?.replace(/^i/,'') || '46360'}`}
+                                                            className="w-40 border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:border-blue-400 font-mono"
+                                                        />
+                                                        {targetLabel && <span className="text-sm text-gray-600">{targetLabel.form}{targetLabel.lang !== definitionLanguage && <span className="text-xs text-gray-400 ml-1">[{targetLabel.lang}]</span>}</span>}
+                                                        {pathTargetIli && !pathTargetRowid && <span className="text-xs text-gray-400 italic">not found</span>}
+                                                        <button
+                                                            onClick={() => pathTargetRowid && runPath(pathTargetRowid)}
+                                                            disabled={!pathTargetRowid}
+                                                            className="px-3 py-1 text-sm rounded border border-gray-300 bg-white hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed">
+                                                            Find path
+                                                        </button>
+                                                    </div>
+                                                    {pathNotFound && <p className="text-sm text-gray-500 italic">No path found within 12 steps.</p>}
+                                                    {pathResult && (
+                                                        <div className="flex flex-wrap items-center gap-1 text-sm">
+                                                            {pathResult.map((step, i) => {
+                                                                const li = getConceptLabel(step.node, definitionLanguage);
+                                                                return (
+                                                                    <React.Fragment key={i}>
+                                                                        {i > 0 && step.rel && (
+                                                                            <span className="text-gray-400 text-xs italic whitespace-nowrap">—{relationNames[RELATION_TO_SHORT[step.rel]] || step.rel.replace(/_/g,' ')}→</span>
+                                                                        )}
+                                                                        <button
+                                                                            onClick={() => handleConceptClick(step.node)}
+                                                                            className={`px-1.5 py-0.5 rounded text-xs border ${step.node === parseInt(selectedConcept) ? 'bg-blue-100 border-blue-400 text-blue-800 font-semibold' : 'bg-white border-gray-300 text-blue-600 hover:border-blue-400'}`}>
+                                                                            {li?.form || `#${step.node}`}
+                                                                            {li?.lang && li.lang !== definitionLanguage && <span className="text-gray-400 ml-0.5">[{li.lang}]</span>}
+                                                                        </button>
+                                                                    </React.Fragment>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                                );
+                                            })()}
+
+                                            {altDefs.length > 0 && (
+                                                <div className="mb-4">
+                                                    <h3 className="font-bold mb-2 text-base">Other definitions:</h3>
+                                                    <div className="space-y-1 ml-2">
+                                                        {altDefs.map(([lang, def]) => (
+                                                            <div key={lang} className="text-sm">
+                                                                <span className="font-semibold text-gray-700" title={getLangFullName(lang)}>{getLangName(lang)}:</span> {def}
+                                                                {concept.dr?.[lang] && renderProvenance('definitions', concept.dr[lang])}
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            )}
+
+                                            <div className="mb-4">
+                                                <h3 className="font-bold mb-2 text-base">All forms expressing this concept:</h3>
+                                                <div className="space-y-1 ml-2">
+                                                    {concept.s && Object.entries(concept.s)
+                                                        .sort(([a], [b]) => getLangName(a).localeCompare(getLangName(b)))
+                                                        .map(([lang, senseIds]) => {
+                                                            const lemmas = senseIds.map(sid => {
+                                                                const sd = loadedSenses[sid.toString()];
+                                                                return sd ? { lemma: sd.l, ind: sd.ind, senseId: sid.toString() } : null;
+                                                            }).filter(Boolean);
+                                                            return (
+                                                                <div key={lang} className="text-sm">
+                                                                    <span className="font-semibold text-gray-700" title={getLangFullName(lang)}>{getLangName(lang)}:</span>{' '}
+                                                                    {lemmas.map((item, idx) => (
+                                                                        <span key={item.senseId}>{idx > 0 && ', '}
+                                                                            <button onClick={() => handleWordformClickWithSense(item.lemma, item.senseId)}
+                                                                                className="text-blue-600 hover:underline">{item.lemma}<sub className="text-gray-400">{item.ind}</sub></button>
+                                                                            {renderProvenance('senses', parseInt(item.senseId))}
+                                                                        </span>
+                                                                    ))}
+                                                                </div>
+                                                            );
+                                                        })}
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })()}
+
+                                {view === 'sense' && selectedSense && (() => {
+                                    const sense = loadedSenses[selectedSense] || loadSenseData(selectedSense);
+                                    if (!sense?.l) return <div className="text-gray-600">Loading sense...</div>;
+                                    return (
+                                        <div>
+                                            <button onClick={handleBackToSearch} className="mb-4 text-blue-600 hover:underline">← Back to search</button>
+                                            <div className="mb-4">
+                                                <h2 className="text-2xl font-bold mb-1">{sense.l}</h2>
+                                                {showPronunciation && sense.p && sense.p.length > 0 && (
+                                                    <div className="text-base text-gray-500 mb-1">
+                                                        {sense.p.map((p, i) => (
+                                                            <span key={i} className="mr-3">
+                                                                /{p.pronunciation}/{p.variety && <span className="text-xs ml-1">{p.variety}</span>}
+                                                            </span>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                                <p className="text-gray-600" title={getLangFullName(sense.lg)}>Language: {getLangName(sense.lg)}</p>
+                                            </div>
+                                            {sense.v && sense.v.length > 0 && (
+                                                <div className="mb-4">
+                                                    <h3 className="font-bold mb-2">Variants:</h3>
+                                                    <div className="ml-2 space-y-1">
+                                                        {sense.v.map((v, i) => (
+                                                            <div key={i}><button onClick={() => handleWordformClick(v)} className="text-blue-600 hover:underline">{v}</button></div>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            )}
+                                            <div className="mb-4">
+                                                <h3 className="font-bold mb-2">Concept:</h3>
+                                                <button onClick={() => handleConceptClick(sense.c)} className="text-blue-600 hover:underline">{sense.c}</button>
+                                            </div>
+                                            {sense.ex && sense.ex.length > 0 && (
+                                                <div className="mb-4">
+                                                    <h3 className="font-bold mb-2">Examples:</h3>
+                                                    <div className="ml-2 space-y-1">
+                                                        {sense.ex.map((ex, i) => (
+                                                            <div key={i} className="text-gray-700">"{renderExample(ex)}"</div>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            )}
+                                            {sense.sr && sense.sr.length > 0 && (
+                                                <div className="mb-4">
+                                                    <h3 className="font-bold mb-2">Sense Relations:</h3>
+                                                    <div className="ml-2 space-y-1 text-sm">
+                                                        {sense.sr.map((rel, i) => (
+                                                            <div key={i}>
+                                                                <span className="text-gray-600">{relationNames[rel.t] || rel.t}:</span>{' '}
+                                                                <button onClick={() => handleSenseClick(rel.to)} className="text-blue-600 hover:underline">{rel.to}</button>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            )}
+                                        </div>
+                                    );
+                                })()}
+                            </div>
+                        )}
+
+                        {activeTab === 'python' && <div><h2 className="text-xl font-bold mb-4">Python Module</h2><p className="text-gray-600">Coming soon.</p></div>}
+                        {activeTab === 'data' && (
+                            <div>
+                                <h2 className="text-xl font-bold mb-4">Data Download</h2>
+                                <p className="text-gray-700 mb-6">
+                                    The Cygnet databases are available for download below. Both are SQLite databases compressed with gzip.
+                                </p>
+                                <ul className="space-y-4 mb-8">
+                                    <li className="text-sm text-gray-800">
+                                        <a href="https://github.com/rowanhm/cygnet/releases/latest/download/cygnet.db.gz" className="text-blue-600 hover:underline font-medium">cygnet.db.gz</a>
+                                        {' '}— The main lexical database, containing synsets, entries, senses, definitions, examples, and pronunciations across all languages.
+                                    </li>
+                                    <li className="text-sm text-gray-800">
+                                        <a href="https://github.com/rowanhm/cygnet/releases/latest/download/provenance.db.gz" className="text-blue-600 hover:underline font-medium">provenance.db.gz</a>
+                                        {' '}— Provenance records tracing every data point back to its source wordnet and original identifier.
+                                    </li>
+                                </ul>
+                                <p className="text-gray-700 mb-4">
+                                    The individual wordnets that make up Cygnet are each available from their respective projects — see the <button onClick={() => setActiveTab('wordnets')} className="text-blue-600 hover:underline">Wordnets</button> tab for the full list with links.
+                                </p>
+                                <p className="text-gray-700">
+                                    Source code for merging and displaying wordnets is available on <a href="https://github.com/rowanhm/cygnet" className="text-blue-600 hover:underline">GitHub</a>.
+                                </p>
+                            </div>
+                        )}
+                        {activeTab === 'about' && (
+                            <div>
+                                <h2 className="text-xl font-bold mb-4">About</h2>
+                                <p className="text-gray-700 mb-4">
+                                    OMW Cygnet is an experimental reformulation of Wordnet that is designed to eliminate conflicting records, and improve modularity. It extends the idea of the <a href="https://omwn.org/" className="text-blue-600 hover:underline">Open Multilingual Wordnet</a> and puts concepts at the core of the structure.
+                                </p>
+                                <p className="text-gray-700 mb-4">
+                                    Developed by Rowan Hall Maudslay and Francis Bond. Source code is available on <a href="https://github.com/rowanhm/cygnet" className="text-blue-600 hover:underline">GitHub</a>.
+                                </p>
+                                {dbStats && (
+                                    <div className="border-t border-gray-200 pt-4 mb-4">
+                                        <h3 className="font-medium text-sm text-gray-700 mb-3">Database statistics</h3>
+                                        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                                            {[
+                                                ['Concepts',  dbStats.synsets],
+                                                ['Entries',   dbStats.entries],
+                                                ['Senses',    dbStats.senses],
+                                                ['Languages', dbStats.languages],
+                                            ].map(([label, n]) => (
+                                                <div key={label} className="bg-gray-50 rounded p-3 text-center">
+                                                    <div className="text-lg font-semibold text-gray-800">{n?.toLocaleString()}</div>
+                                                    <div className="text-xs text-gray-500 mt-0.5">{label}</div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                )}
+                                <div className="border-t border-gray-200 pt-4">
+                                    <h3 className="font-medium text-sm text-gray-700 mb-2">Cache</h3>
+                                    <p className="text-sm text-gray-500 mb-2">
+                                        The database is cached locally in your browser to avoid re-downloading on each visit.
+                                    </p>
+                                    <button
+                                        onClick={async () => {
+                                            if (confirm('Clear cached database? It will be re-downloaded on next page load.')) {
+                                                await idbClear();
+                                                _provDb = null;
+                                                location.reload();
+                                            }
+                                        }}
+                                        className="text-sm text-red-600 hover:text-red-800 underline"
+                                    >Clear cached database</button>
+                                </div>
+                            </div>
+                        )}
+                        {activeTab === 'publications' && (
+                            <div>
+                                <h2 className="text-xl font-bold mb-4">Publications</h2>
+                                <ul className="space-y-4">
+                                    <li className="text-sm text-gray-800">
+                                        Rowan Hall Maudslay &amp; Francis Bond (2026). Cygnet: Refactoring the Open Multilingual Wordnet. In <em>Proceedings of the 15th International Conference on Language Resources and Evaluation (LREC 2026)</em>. (to appear)
+                                    </li>
+                                    <li className="text-sm text-gray-800">
+                                        Francis Bond &amp; Ryan Foster (2013). Linking and extending an open multilingual wordnet. In <em>Proceedings of the 51st Annual Meeting of the Association for Computational Linguistics (ACL 2013)</em>. Sofia. pp. 1352–1362.
+                                    </li>
+                                    <li className="text-sm text-gray-800">
+                                        Francis Bond &amp; Kyonghee Paik (2012). A survey of wordnets and their licenses. In <em>Proceedings of the 6th Global WordNet Conference (GWC 2012)</em>. Matsue. pp. 64–71.
+                                    </li>
+                                </ul>
+                            </div>
+                        )}
+                        {activeTab === 'wordnets' && (() => {
+                            const shortLicence = (url) => {
+                                if (!url) return null;
+                                const cc = url.match(/creativecommons\.org\/licenses\/([\w-]+)\/([\d.]+)/);
+                                if (cc) return `CC ${cc[1].toUpperCase()} ${cc[2]}`;
+                                if (/opendatacommons\.org.*odc-by|\/odc-by\//i.test(url)) return 'ODC BY';
+                                const cecill = url.match(/Licence_(CeCILL[^_]*)_V(\d+)/i);
+                                if (cecill) return `${cecill[1]} V${cecill[2]}`;
+                                if (/apache/i.test(url)) return 'Apache 2.0';
+                                if (url === 'wordnet') return 'WordNet';
+                                return url;
+                            };
+                            const sortResources = (col) => setWnSort(s => ({ col, asc: s.col === col ? !s.asc : true }));
+                            const sortedResources = (() => {
+                                if (!wnSort.col) return allResources;
+                                const key = { Language: r => getLangFullName(r.language) || '', Name: r => r.label || r.code || '', Concepts: r => r.synset_count ?? -1, Senses: r => r.sense_count ?? -1, Version: r => r.version || '', Licence: r => shortLicence(r.licence) || '' }[wnSort.col];
+                                return [...allResources].sort((a, b) => {
+                                    const av = key(a), bv = key(b);
+                                    const cmp = typeof av === 'number' ? av - bv : av.localeCompare(bv);
+                                    return wnSort.asc ? cmp : -cmp;
+                                });
+                            })();
+                            const SortTh = ({ col, right }) => {
+                                const active = wnSort.col === col;
+                                return <th className={`px-3 py-2 border border-gray-200 cursor-pointer select-none hover:bg-gray-200${right ? ' text-right' : ''}`} onClick={() => sortResources(col)}>{col}{active ? (wnSort.asc ? ' ▲' : ' ▼') : ''}</th>;
+                            };
+                            return (
+                            <div>
+                                <h2 className="text-xl font-bold mb-4">Contributing Wordnets</h2>
+                                {allResources.length === 0 ? (
+                                    <p className="text-gray-600">No resource metadata available.</p>
+                                ) : (
+                                    <table className="w-full text-sm border-collapse">
+                                        <thead>
+                                            <tr className="bg-gray-100 text-left">
+                                                <SortTh col="Language"/>
+                                                <SortTh col="Name"/>
+                                                <SortTh col="Concepts" right/>
+                                                <SortTh col="Senses" right/>
+                                                <SortTh col="Version"/>
+                                                <th className="px-3 py-2 border border-gray-200">Citation</th>
+                                                <SortTh col="Licence"/>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {sortedResources.map((r, i) => (
+                                                <tr key={r.code}
+                                                    ref={r.code === highlightedResource ? highlightedRowRef : null}
+                                                    className={r.code === highlightedResource ? 'bg-yellow-100' : (i % 2 === 0 ? 'bg-white' : 'bg-gray-50')}>
+                                                    <td className="px-3 py-2 border border-gray-200 whitespace-nowrap">
+                                                        {r.language
+                                                            ? <span title={r.language} className="cursor-help">{getLangFullName(r.language)}</span>
+                                                            : '—'}
+                                                    </td>
+                                                    <td className="px-3 py-2 border border-gray-200 font-medium">
+                                                        {r.url
+                                                            ? <a href={r.url} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{r.label || r.code}</a>
+                                                            : (r.label || r.code)}
+                                                        <button onClick={() => setInfoPopup(r)}
+                                                                className="float-right text-blue-600 hover:text-blue-800"
+                                                                title="Show full metadata">ⓘ</button>
+                                                    </td>
+                                                    <td className="px-3 py-2 border border-gray-200 text-right tabular-nums">{r.synset_count != null ? r.synset_count.toLocaleString() : '—'}</td>
+                                                    <td className="px-3 py-2 border border-gray-200 text-right tabular-nums">{r.sense_count != null ? r.sense_count.toLocaleString() : '—'}</td>
+                                                    <td className="px-3 py-2 border border-gray-200 whitespace-nowrap">{r.version || '—'}</td>
+                                                    <td className="px-3 py-2 border border-gray-200">
+                                                        {r.citation
+                                                            ? <details><summary className="cursor-pointer text-blue-600 hover:underline list-none w-fit">cite</summary><p className="mt-1 text-xs text-gray-600 max-w-sm">{r.citation}</p></details>
+                                                            : '—'}
+                                                    </td>
+                                                    <td className="px-3 py-2 border border-gray-200 whitespace-nowrap">
+                                                        {r.licence
+                                                            ? <a href={r.licence} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{shortLicence(r.licence)}</a>
+                                                            : '—'}
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                )}
+                            </div>
+                            );
+                        })()}
+                    </main>
+
+                    <footer className="mt-auto py-4">
+                        <div className="max-w-4xl mx-auto px-4 border-t border-gray-200 pt-4 text-center text-sm text-gray-600">
+                            <span>Cygnet — SQL interface</span>
+                        </div>
+                    </footer>
+
+                    {infoPopup && (() => {
+                        const r = infoPopup;
+                        const extra = (() => { try { return r.extra ? JSON.parse(r.extra) : null; } catch(e) { return null; } })();
+                        const rows = [
+                            ['ID',          r.code],
+                            ['Language',    r.language ? `${getLangFullName(r.language)} (${r.language})` : null],
+                            ['Version',     r.version],
+                            ['URL',         r.url],
+                            ['Licence',     r.licence],
+                            ['Email',       r.email],
+                            ['Status',      r.status],
+                            ['Confidence',  r.confidence_score != null ? r.confidence_score : null],
+                            ['Citation',    r.citation],
+                            ...(extra ? Object.entries(extra).map(([k, v]) => [k.replace(/^.*[/:}]/, ''), v]) : []),
+                        ].filter(([, v]) => v != null && v !== '');
+                        return (
+                            <div className="fixed inset-0 z-50 flex items-center justify-center"
+                                 onClick={() => setInfoPopup(null)}>
+                                <div className="absolute inset-0 bg-black opacity-40" />
+                                <div className="relative bg-white rounded-lg shadow-xl w-full max-w-lg mx-4 p-6 max-h-[80vh] overflow-y-auto"
+                                     onClick={e => e.stopPropagation()}>
+                                    <div className="flex items-start justify-between mb-4">
+                                        <h3 className="text-lg font-bold text-gray-900">{r.label || r.code}</h3>
+                                        <button onClick={() => setInfoPopup(null)}
+                                                className="text-gray-400 hover:text-gray-600 text-xl leading-none ml-4">✕</button>
+                                    </div>
+                                    <dl className="space-y-2 text-sm">
+                                        {rows.map(([label, value]) => (
+                                            <div key={label} className="grid grid-cols-[7rem_1fr] gap-2">
+                                                <dt className="font-medium text-gray-500">{label}</dt>
+                                                <dd className="text-gray-800 break-words">
+                                                    {/^https?:\/\//.test(value)
+                                                        ? <a href={value} target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline">{value}</a>
+                                                        : value}
+                                                </dd>
+                                            </div>
+                                        ))}
+                                    </dl>
+                                </div>
+                            </div>
+                        );
+                    })()}
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<DictionaryBrowser />);
+    </script>
+</body>
+</html>

@@ -13,6 +13,7 @@
         <xs:element ref="ExampleLayer" minOccurs="0" maxOccurs="1"/>
         <xs:element ref="SenseRelationLayer" minOccurs="0" maxOccurs="1"/>
         <xs:element ref="ConceptRelationLayer" minOccurs="0" maxOccurs="1"/>
+        <xs:element ref="ResourcesLayer" minOccurs="0" maxOccurs="1"/>
       </xs:sequence>
       <!-- Metadata attributes -->
       <xs:attribute name="id" type="xs:ID" use="required"/>
@@ -360,6 +361,22 @@
       </xs:sequence>
       <!-- Dependencies: Relations connect Concepts -->
       <xs:attribute name="requires_concept_layer" type="xs:string" use="optional"/>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- ResourcesLayer: Metadata for each contributing wordnet source -->
+  <xs:element name="ResourcesLayer">
+    <xs:complexType>
+      <xs:sequence>
+        <xs:element ref="Resource" minOccurs="0" maxOccurs="unbounded"/>
+      </xs:sequence>
+    </xs:complexType>
+  </xs:element>
+
+  <!-- Resource: Metadata for one contributing wordnet (attributes vary by source) -->
+  <xs:element name="Resource">
+    <xs:complexType>
+      <xs:anyAttribute processContents="lax"/>
     </xs:complexType>
   </xs:element>
 

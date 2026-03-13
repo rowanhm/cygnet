@@ -101,3 +101,4 @@ th = ["https://github.com/omwn/omw-data/releases/download/v2.0/omw-th-2.0.tar.xz
 # Latvian -
 # Note bug in data, the licence is wrong, I have confirmed it is CC BY-SA 4.0
 lv = ["https://repository.clarin.lv/repository/xmlui/bitstream/handle/20.500.12574/119/tezaurs_2025_1_lmf.xml"]
+

@@ -35,23 +35,23 @@ SENSE_RELATION_NAME_MAPPING = {
 }
 
 CONCEPT_RELATION_NAME_MAPPING = {
-    'hypernym': 'class_hypernym',
-    'instance_hypernym': 'instance_hypernym',
-    'mero_member': 'member_meronym',
-    'mero_part': 'part_meronym',
-    'mero_substance': 'substance_meronym',
-    'causes': 'causes',
-    'entails': 'entails',
-    'agent': 'agent_of_action',
-    'patient': 'patient_of_action',
-    'result': 'result_of_action',
-    'co_agent_instrument': 'instrument_of_agent',
-    'antonym': 'opposite',
-    'instrument': 'instrument_of_action',
-    'co_agent_result': 'result_of_agent',
-    'co_agent_patient': 'patient_of_agent',
-    'co_patient_instrument': 'instrument_of_patient',
-    'co_result_instrument': 'instrument_of_result',
+    'hypernym':              'hypernym',
+    'instance_hypernym':     'instance_hypernym',
+    'mero_member':           'mero_member',
+    'mero_part':             'mero_part',
+    'mero_substance':        'mero_substance',
+    'causes':                'causes',
+    'entails':               'entails',
+    'antonym':               'antonym',
+    'agent':                 None,
+    'patient':               None,
+    'result':                None,
+    'co_agent_instrument':   None,
+    'instrument':            None,
+    'co_agent_result':       None,
+    'co_agent_patient':      None,
+    'co_patient_instrument': None,
+    'co_result_instrument':  None,
 }
 
 SENSE_RELATION_PAIRS = {
@@ -152,13 +152,13 @@ CONCEPT_RELATION_PAIRS = {
 }
 
 CONCEPT_RELATIONS_REQUIRING_SAME_CATEGORY = {
-    'class_hypernym',
+    'hypernym',
     'instance_hypernym',
-    'member_meronym',
-    'part_meronym',
-    'substance_meronym',
+    'mero_member',
+    'mero_part',
+    'mero_substance',
     'causes',
-    'entails'
+    'entails',
 }
 
 # ISO 639-1 language code to spaCy efficient (small) model mapping
@@ -329,6 +329,7 @@ class WordNetToCygnetConverter:
         self.created_concepts: Set[str] = set()  # concept_ids already created
 
         self.lexicon_version = None
+        self.lexicon_attrs: Dict[str, str] = {}
 
     def read_metadata(self, input_path: str) -> Tuple[etree.Element, etree.ElementTree]:
         """Parse the input file and extract metadata without full conversion."""
@@ -342,6 +343,7 @@ class WordNetToCygnetConverter:
             lexicon_elem = root.find('.//Lexicon')
 
         if lexicon_elem is not None:
+            self.lexicon_attrs = dict(lexicon_elem.attrib)
             self.lexicon_id = lexicon_elem.get('id')
             self.lexicon_version = lexicon_elem.get('version')
             self.lexicon_language = lexicon_elem.get('language')
@@ -382,8 +384,18 @@ class WordNetToCygnetConverter:
             self.nlp = spacy.load(model_name, disable=["parser", "ner", "tok2vec"])
         except OSError:
             print(f"  Downloading spaCy model '{model_name}'...")
+            import shutil
             import subprocess
-            subprocess.run([sys.executable, "-m", "spacy", "download", model_name])
+            from spacy.cli.download import get_compatibility, get_version
+            version = get_version(model_name, get_compatibility())
+            wheel_url = (
+                f"https://github.com/explosion/spacy-models/releases/download/"
+                f"{model_name}-{version}/{model_name}-{version}-py3-none-any.whl"
+            )
+            if shutil.which('uv'):
+                subprocess.run(['uv', 'pip', 'install', wheel_url], check=True)
+            else:
+                subprocess.run([sys.executable, '-m', 'pip', 'install', wheel_url], check=True)
             self.nlp = spacy.load(model_name, disable=["parser", "ner", "tok2vec"])
 
         # Initialize NLTK lemmatizer
@@ -1245,7 +1257,7 @@ class WordNetToCygnetConverter:
             seen_symmetric = set()
 
             for source, target, rel_type_val in sorted(with_inverses):
-                if rel_type_val not in name_mapping:
+                if name_mapping.get(rel_type_val) is None:
                     continue
 
                 inverse_type = pairs_dict.get(rel_type_val)
@@ -1601,11 +1613,8 @@ class WordNetToCygnetConverter:
         """Build the output CygnetResource XML tree."""
         print("\nBuilding output XML...")
 
-        # Create root element
-        cygnet_root = etree.Element('CygnetResource',
-                                    id=self.lexicon_id,
-                                    label=self.lexicon_label,
-                                    version="1.0")
+        # Create root element with all source attributes preserved
+        cygnet_root = etree.Element('CygnetResource', **self.lexicon_attrs)
 
         # Add layers only if they have content
         if self.concepts:

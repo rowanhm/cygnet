@@ -1,0 +1,410 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Strict//EN"
+	"http://www.w3.org/TR/xhtml1/DTD/xhtml1-strict.dtd">
+
+<html xmlns="http://www.w3.org/1999/xhtml">
+
+<head>
+<title>SCHEMA.html</title>
+<meta http-equiv="Content-Type" content="text/html;charset=utf-8"/>
+
+</head>
+
+<body>
+
+<h1 id="cygnet-sqlite-schema">Cygnet SQLite Schema</h1>
+<p>The web interface stores the merged multilingual wordnet in a single SQLite database (<code>cygnet.db</code>). The schema follows the <a href="https://github.com/goodmami/wn">Python <code>wn</code> module</a>’s SQLite layout where possible, with modifications for Cygnet’s merged, ILI-indexed structure.</p>
+<p>The schema is optimized for size: text ID columns are omitted (the web interface uses integer rowids for all lookups), language codes are normalized into a lookup table, and only indexes needed by the web interface are created.</p>
+<figure>
+<img src="schema.svg" alt="ER diagram" /><figcaption>ER diagram</figcaption>
+</figure>
+<h2 id="er-diagram-mermaid-source">ER diagram (Mermaid source)</h2>
+<pre class="mermaid"><code>erDiagram
+    languages {
+        INTEGER rowid PK
+        TEXT code UK &quot;e.g. en, de, cmn-Hans&quot;
+    }
+
+    synsets {
+        INTEGER rowid PK
+        TEXT ili &quot;e.g. i85041&quot;
+        TEXT pos &quot;NOUN, VERB, ADJ, ADV&quot;
+    }
+
+    entries {
+        INTEGER rowid PK
+        INTEGER language_rowid FK
+        TEXT pos &quot;NOUN, VERB, ADJ, ADV&quot;
+    }
+
+    forms {
+        INTEGER rowid PK
+        INTEGER entry_rowid FK
+        TEXT form &quot;surface form&quot;
+        TEXT normalized_form &quot;accent-stripped lowercase&quot;
+        INTEGER rank &quot;0 = lemma&quot;
+    }
+
+    senses {
+        INTEGER rowid PK
+        INTEGER entry_rowid FK
+        INTEGER synset_rowid FK
+        INTEGER sense_index &quot;disambiguation index&quot;
+    }
+
+    definitions {
+        INTEGER rowid PK
+        INTEGER synset_rowid FK
+        TEXT definition
+        INTEGER language_rowid FK
+    }
+
+    synset_relations {
+        INTEGER rowid PK
+        INTEGER source_rowid FK
+        INTEGER target_rowid FK
+        INTEGER type_rowid FK
+    }
+
+    sense_relations {
+        INTEGER rowid PK
+        INTEGER source_rowid FK
+        INTEGER target_rowid FK
+        INTEGER type_rowid FK
+    }
+
+    relation_types {
+        INTEGER rowid PK
+        TEXT type UK &quot;e.g. antonym, class_hypernym&quot;
+    }
+
+    examples {
+        INTEGER rowid PK
+        TEXT example
+    }
+
+    sense_examples {
+        INTEGER rowid PK
+        INTEGER sense_rowid FK
+        INTEGER example_rowid FK
+    }
+
+    example_annotations {
+        INTEGER rowid PK
+        INTEGER example_rowid FK
+        INTEGER start_offset
+        INTEGER end_offset
+        INTEGER sense_rowid FK
+    }
+
+    definition_annotations {
+        INTEGER rowid PK
+        INTEGER definition_rowid FK
+        INTEGER start_offset
+        INTEGER end_offset
+        INTEGER sense_rowid FK
+    }
+
+    languages ||--o{ entries : &quot;language_rowid&quot;
+    languages ||--o{ definitions : &quot;language_rowid&quot;
+    entries ||--o{ forms : &quot;entry_rowid&quot;
+    entries ||--o{ senses : &quot;entry_rowid&quot;
+    synsets ||--o{ senses : &quot;synset_rowid&quot;
+    synsets ||--o{ definitions : &quot;synset_rowid&quot;
+    synsets ||--o{ synset_relations : &quot;source_rowid&quot;
+    synsets ||--o{ synset_relations : &quot;target_rowid&quot;
+    senses ||--o{ sense_relations : &quot;source_rowid&quot;
+    senses ||--o{ sense_relations : &quot;target_rowid&quot;
+    senses ||--o{ sense_examples : &quot;sense_rowid&quot;
+    senses ||--o{ example_annotations : &quot;sense_rowid&quot;
+    senses ||--o{ definition_annotations : &quot;sense_rowid&quot;
+    examples ||--o{ sense_examples : &quot;example_rowid&quot;
+    examples ||--o{ example_annotations : &quot;example_rowid&quot;
+    definitions ||--o{ definition_annotations : &quot;definition_rowid&quot;
+    relation_types ||--o{ synset_relations : &quot;type_rowid&quot;
+    relation_types ||--o{ sense_relations : &quot;type_rowid&quot;</code></pre>
+<h2 id="tables">Tables</h2>
+<h3 id="languages">languages</h3>
+<p>Lookup table for language codes, referenced by integer FK from entries and definitions.</p>
+<div class="sourceCode" id="cb2"><pre class="sourceCode sql"><code class="sourceCode sql"><a class="sourceLine" id="cb2-1" title="1"><span class="kw">CREATE</span> <span class="kw">TABLE</span> languages (</a>
+<a class="sourceLine" id="cb2-2" title="2">    <span class="dt">rowid</span> <span class="dt">INTEGER</span> <span class="kw">PRIMARY</span> <span class="kw">KEY</span>,</a>
+<a class="sourceLine" id="cb2-3" title="3">    code  TEXT <span class="kw">NOT</span> <span class="kw">NULL</span> <span class="kw">UNIQUE</span>   <span class="co">-- ISO 639: &quot;en&quot;, &quot;de&quot;, &quot;cmn-Hans&quot;</span></a>
+<a class="sourceLine" id="cb2-4" title="4">);</a></code></pre></div>
+<pre><code>rowid  code
+─────  ────────
+1      ckb
+2      de
+3      en
+...</code></pre>
+<h3 id="synsets">synsets</h3>
+<p>A synset (= Cygnet Concept) groups senses that share a meaning.</p>
+<div class="sourceCode" id="cb4"><pre class="sourceCode sql"><code class="sourceCode sql"><a class="sourceLine" id="cb4-1" title="1"><span class="kw">CREATE</span> <span class="kw">TABLE</span> synsets (</a>
+<a class="sourceLine" id="cb4-2" title="2">    <span class="dt">rowid</span> <span class="dt">INTEGER</span> <span class="kw">PRIMARY</span> <span class="kw">KEY</span>,</a>
+<a class="sourceLine" id="cb4-3" title="3">    ili   TEXT,           <span class="co">-- bare ILI identifier: &quot;i85041&quot;</span></a>
+<a class="sourceLine" id="cb4-4" title="4">    pos   TEXT <span class="kw">NOT</span> <span class="kw">NULL</span>   <span class="co">-- NOUN, VERB, ADJ, ADV, ...</span></a>
+<a class="sourceLine" id="cb4-5" title="5">);</a></code></pre></div>
+<pre><code>rowid  ili     pos
+─────  ──────  ────
+1      i1      ADJ
+35549  i35549  NOUN</code></pre>
+<p><strong>Differs from <code>wn</code>:</strong> no <code>lexicon_rowid</code> (Cygnet merges all wordnets). No text <code>id</code> column (saves ~4 MB; ILI is used for display).</p>
+<h3 id="entries">entries</h3>
+<p>An entry (= Cygnet Lexeme) is a word in a specific language with a grammatical category.</p>
+<div class="sourceCode" id="cb6"><pre class="sourceCode sql"><code class="sourceCode sql"><a class="sourceLine" id="cb6-1" title="1"><span class="kw">CREATE</span> <span class="kw">TABLE</span> entries (</a>
+<a class="sourceLine" id="cb6-2" title="2">    <span class="dt">rowid</span>          <span class="dt">INTEGER</span> <span class="kw">PRIMARY</span> <span class="kw">KEY</span>,</a>
+<a class="sourceLine" id="cb6-3" title="3">    language_rowid <span class="dt">INTEGER</span> <span class="kw">NOT</span> <span class="kw">NULL</span> <span class="kw">REFERENCES</span> languages(<span class="dt">rowid</span>),</a>
+<a class="sourceLine" id="cb6-4" title="4">    pos            TEXT <span class="kw">NOT</span> <span class="kw">NULL</span>   <span class="co">-- NOUN, VERB, ADJ, ADV, ...</span></a>
+<a class="sourceLine" id="cb6-5" title="5">);</a></code></pre></div>
+<pre><code>rowid   language_rowid  pos
+──────  ──────────────  ────
+88234   3               NOUN</code></pre>
+<p><strong>Differs from <code>wn</code>:</strong> <code>language_rowid</code> FK instead of text (in <code>wn</code>, language comes from a <code>lexicons</code> table). No text <code>id</code> column (saves ~80 MB).</p>
+<h3 id="forms">forms</h3>
+<p>Surface forms (wordforms) for an entry. Rank 0 is the lemma (citation form); higher ranks are inflected/variant forms.</p>
+<div class="sourceCode" id="cb8"><pre class="sourceCode sql"><code class="sourceCode sql"><a class="sourceLine" id="cb8-1" title="1"><span class="kw">CREATE</span> <span class="kw">TABLE</span> forms (</a>
+<a class="sourceLine" id="cb8-2" title="2">    <span class="dt">rowid</span>           <span class="dt">INTEGER</span> <span class="kw">PRIMARY</span> <span class="kw">KEY</span>,</a>
+<a class="sourceLine" id="cb8-3" title="3">    entry_rowid     <span class="dt">INTEGER</span> <span class="kw">NOT</span> <span class="kw">NULL</span> <span class="kw">REFERENCES</span> entries(<span class="dt">rowid</span>),</a>
+<a class="sourceLine" id="cb8-4" title="4">    form            TEXT <span class="kw">NOT</span> <span class="kw">NULL</span>,     <span class="co">-- surface form: &quot;banks&quot;</span></a>
+<a class="sourceLine" id="cb8-5" title="5">    normalized_form TEXT,              <span class="co">-- accent-stripped lowercase: &quot;banks&quot;</span></a>
+<a class="sourceLine" id="cb8-6" title="6">    <span class="fu">rank</span>            <span class="dt">INTEGER</span> <span class="kw">DEFAULT</span> <span class="dv">1</span>  <span class="co">-- 0 = lemma</span></a>
+<a class="sourceLine" id="cb8-7" title="7">);</a></code></pre></div>
+<pre><code>rowid  entry_rowid  form   normalized_form  rank
+─────  ───────────  ─────  ───────────────  ────
+1      88234        bank   bank             0
+2      88234        banks  banks            1</code></pre>
+<p><strong>Differs from <code>wn</code>:</strong> added <code>normalized_form</code> for accent-insensitive search. No UNIQUE constraint (duplicates filtered at insert time).</p>
+<h3 id="senses">senses</h3>
+<p>A sense links an entry to a synset – it represents one meaning of a word.</p>
+<div class="sourceCode" id="cb10"><pre class="sourceCode sql"><code class="sourceCode sql"><a class="sourceLine" id="cb10-1" title="1"><span class="kw">CREATE</span> <span class="kw">TABLE</span> senses (</a>
+<a class="sourceLine" id="cb10-2" title="2">    <span class="dt">rowid</span>        <span class="dt">INTEGER</span> <span class="kw">PRIMARY</span> <span class="kw">KEY</span>,</a>
+<a class="sourceLine" id="cb10-3" title="3">    entry_rowid  <span class="dt">INTEGER</span> <span class="kw">NOT</span> <span class="kw">NULL</span> <span class="kw">REFERENCES</span> entries(<span class="dt">rowid</span>),</a>
+<a class="sourceLine" id="cb10-4" title="4">    synset_rowid <span class="dt">INTEGER</span> <span class="kw">NOT</span> <span class="kw">NULL</span> <span class="kw">REFERENCES</span> synsets(<span class="dt">rowid</span>),</a>
+<a class="sourceLine" id="cb10-5" title="5">    sense_index  <span class="dt">INTEGER</span> <span class="kw">DEFAULT</span> <span class="dv">1</span>   <span class="co">-- disambiguation: bank_1 vs bank_2</span></a>
+<a class="sourceLine" id="cb10-6" title="6">);</a></code></pre></div>
+<pre><code>rowid   entry_rowid  synset_rowid  sense_index
+──────  ───────────  ────────────  ───────────
+127932  88234        35549         1
+127933  88234        31364         2</code></pre>
+<p><code>sense_index</code> is computed per (language, lemma, pos) group, so English “bank” as a noun has indices 1–18 while German “Bank” as a noun has 1–3.</p>
+<p><strong>Differs from <code>wn</code>:</strong> no text <code>id</code> column (saves ~149 MB).</p>
+<h3 id="definitions">definitions</h3>
+<p>Definitions (= Cygnet Glosses) for a synset in a given language.</p>
+<div class="sourceCode" id="cb12"><pre class="sourceCode sql"><code class="sourceCode sql"><a class="sourceLine" id="cb12-1" title="1"><span class="kw">CREATE</span> <span class="kw">TABLE</span> definitions (</a>
+<a class="sourceLine" id="cb12-2" title="2">    <span class="dt">rowid</span>          <span class="dt">INTEGER</span> <span class="kw">PRIMARY</span> <span class="kw">KEY</span>,</a>
+<a class="sourceLine" id="cb12-3" title="3">    synset_rowid   <span class="dt">INTEGER</span> <span class="kw">NOT</span> <span class="kw">NULL</span> <span class="kw">REFERENCES</span> synsets(<span class="dt">rowid</span>),</a>
+<a class="sourceLine" id="cb12-4" title="4">    definition     TEXT,</a>
+<a class="sourceLine" id="cb12-5" title="5">    language_rowid <span class="dt">INTEGER</span> <span class="kw">REFERENCES</span> languages(<span class="dt">rowid</span>)</a>
+<a class="sourceLine" id="cb12-6" title="6">);</a></code></pre></div>
+<pre><code>rowid  synset_rowid  definition                                                   language_rowid
+─────  ────────────  ──────────────────────────────────────────────────────────── ──────────────
+1      1             (usually followed by `to&#39;) having the necessary means or ... 3</code></pre>
+<p>A synset may have definitions in multiple languages.</p>
+<h3 id="synset_relations">synset_relations</h3>
+<p>Directed relations between synsets (hypernymy, meronymy, etc.). Both forward and inverse directions are stored explicitly.</p>
+<div class="sourceCode" id="cb14"><pre class="sourceCode sql"><code class="sourceCode sql"><a class="sourceLine" id="cb14-1" title="1"><span class="kw">CREATE</span> <span class="kw">TABLE</span> synset_relations (</a>
+<a class="sourceLine" id="cb14-2" title="2">    <span class="dt">rowid</span>        <span class="dt">INTEGER</span> <span class="kw">PRIMARY</span> <span class="kw">KEY</span>,</a>
+<a class="sourceLine" id="cb14-3" title="3">    source_rowid <span class="dt">INTEGER</span> <span class="kw">NOT</span> <span class="kw">NULL</span> <span class="kw">REFERENCES</span> synsets(<span class="dt">rowid</span>),</a>
+<a class="sourceLine" id="cb14-4" title="4">    target_rowid <span class="dt">INTEGER</span> <span class="kw">NOT</span> <span class="kw">NULL</span> <span class="kw">REFERENCES</span> synsets(<span class="dt">rowid</span>),</a>
+<a class="sourceLine" id="cb14-5" title="5">    type_rowid   <span class="dt">INTEGER</span> <span class="kw">NOT</span> <span class="kw">NULL</span> <span class="kw">REFERENCES</span> relation_types(<span class="dt">rowid</span>)</a>
+<a class="sourceLine" id="cb14-6" title="6">);</a></code></pre></div>
+<h3 id="sense_relations">sense_relations</h3>
+<p>Directed relations between senses (antonymy, derivation, etc.).</p>
+<div class="sourceCode" id="cb15"><pre class="sourceCode sql"><code class="sourceCode sql"><a class="sourceLine" id="cb15-1" title="1"><span class="kw">CREATE</span> <span class="kw">TABLE</span> sense_relations (</a>
+<a class="sourceLine" id="cb15-2" title="2">    <span class="dt">rowid</span>        <span class="dt">INTEGER</span> <span class="kw">PRIMARY</span> <span class="kw">KEY</span>,</a>
+<a class="sourceLine" id="cb15-3" title="3">    source_rowid <span class="dt">INTEGER</span> <span class="kw">NOT</span> <span class="kw">NULL</span> <span class="kw">REFERENCES</span> senses(<span class="dt">rowid</span>),</a>
+<a class="sourceLine" id="cb15-4" title="4">    target_rowid <span class="dt">INTEGER</span> <span class="kw">NOT</span> <span class="kw">NULL</span> <span class="kw">REFERENCES</span> senses(<span class="dt">rowid</span>),</a>
+<a class="sourceLine" id="cb15-5" title="5">    type_rowid   <span class="dt">INTEGER</span> <span class="kw">NOT</span> <span class="kw">NULL</span> <span class="kw">REFERENCES</span> relation_types(<span class="dt">rowid</span>)</a>
+<a class="sourceLine" id="cb15-6" title="6">);</a></code></pre></div>
+<h3 id="relation_types">relation_types</h3>
+<p>Lookup table mapping relation type names to integer IDs.</p>
+<pre><code>rowid  type
+─────  ──────────────────
+1      antonym
+2      derivation
+3      derivation_of
+4      pertainym
+...
+9      class_hypernym
+10     class_hyponym</code></pre>
+<p>22 types total: antonym, derivation, derivation_of, pertainym, pertainym_of, participle, participle_of, opposite, class_hypernym, class_hyponym, part_meronym, part_holonym, member_meronym, member_holonym, entails, entailed_by, substance_meronym, substance_holonym, causes, caused_by, instance_hypernym, instance_hyponym.</p>
+<h3 id="examples">examples</h3>
+<p>Example sentences, stored once and linked to senses via a junction table.</p>
+<div class="sourceCode" id="cb17"><pre class="sourceCode sql"><code class="sourceCode sql"><a class="sourceLine" id="cb17-1" title="1"><span class="kw">CREATE</span> <span class="kw">TABLE</span> examples (</a>
+<a class="sourceLine" id="cb17-2" title="2">    <span class="dt">rowid</span>   <span class="dt">INTEGER</span> <span class="kw">PRIMARY</span> <span class="kw">KEY</span>,</a>
+<a class="sourceLine" id="cb17-3" title="3">    example TEXT <span class="kw">NOT</span> <span class="kw">NULL</span>   <span class="co">-- &quot;they pulled the canoe up on the bank&quot;</span></a>
+<a class="sourceLine" id="cb17-4" title="4">);</a>
+<a class="sourceLine" id="cb17-5" title="5"></a>
+<a class="sourceLine" id="cb17-6" title="6"><span class="kw">CREATE</span> <span class="kw">TABLE</span> sense_examples (</a>
+<a class="sourceLine" id="cb17-7" title="7">    <span class="dt">rowid</span>         <span class="dt">INTEGER</span> <span class="kw">PRIMARY</span> <span class="kw">KEY</span>,</a>
+<a class="sourceLine" id="cb17-8" title="8">    sense_rowid   <span class="dt">INTEGER</span> <span class="kw">NOT</span> <span class="kw">NULL</span> <span class="kw">REFERENCES</span> senses(<span class="dt">rowid</span>),</a>
+<a class="sourceLine" id="cb17-9" title="9">    example_rowid <span class="dt">INTEGER</span> <span class="kw">NOT</span> <span class="kw">NULL</span> <span class="kw">REFERENCES</span> examples(<span class="dt">rowid</span>)</a>
+<a class="sourceLine" id="cb17-10" title="10">);</a></code></pre></div>
+<h3 id="example_annotations">example_annotations</h3>
+<p>Character-offset annotations marking which token in an example corresponds to which sense.</p>
+<div class="sourceCode" id="cb18"><pre class="sourceCode sql"><code class="sourceCode sql"><a class="sourceLine" id="cb18-1" title="1"><span class="kw">CREATE</span> <span class="kw">TABLE</span> example_annotations (</a>
+<a class="sourceLine" id="cb18-2" title="2">    <span class="dt">rowid</span>         <span class="dt">INTEGER</span> <span class="kw">PRIMARY</span> <span class="kw">KEY</span>,</a>
+<a class="sourceLine" id="cb18-3" title="3">    example_rowid <span class="dt">INTEGER</span> <span class="kw">NOT</span> <span class="kw">NULL</span> <span class="kw">REFERENCES</span> examples(<span class="dt">rowid</span>),</a>
+<a class="sourceLine" id="cb18-4" title="4">    start_offset  <span class="dt">INTEGER</span> <span class="kw">NOT</span> <span class="kw">NULL</span>,</a>
+<a class="sourceLine" id="cb18-5" title="5">    end_offset    <span class="dt">INTEGER</span> <span class="kw">NOT</span> <span class="kw">NULL</span>,</a>
+<a class="sourceLine" id="cb18-6" title="6">    sense_rowid   <span class="dt">INTEGER</span> <span class="kw">NOT</span> <span class="kw">NULL</span> <span class="kw">REFERENCES</span> senses(<span class="dt">rowid</span>)</a>
+<a class="sourceLine" id="cb18-7" title="7">);</a></code></pre></div>
+<pre><code>example_rowid  start_offset  end_offset  sense_rowid
+─────────────  ────────────  ──────────  ───────────
+1              32            36          127932</code></pre>
+<p>This means characters 32–36 of example 1 (“bank”) are annotated as sense 127932.</p>
+<h3 id="definition_annotations">definition_annotations</h3>
+<p>Same structure as example_annotations, for definitions. Currently empty (no definition annotations in the source data).</p>
+<div class="sourceCode" id="cb20"><pre class="sourceCode sql"><code class="sourceCode sql"><a class="sourceLine" id="cb20-1" title="1"><span class="kw">CREATE</span> <span class="kw">TABLE</span> definition_annotations (</a>
+<a class="sourceLine" id="cb20-2" title="2">    <span class="dt">rowid</span>            <span class="dt">INTEGER</span> <span class="kw">PRIMARY</span> <span class="kw">KEY</span>,</a>
+<a class="sourceLine" id="cb20-3" title="3">    definition_rowid <span class="dt">INTEGER</span> <span class="kw">NOT</span> <span class="kw">NULL</span> <span class="kw">REFERENCES</span> definitions(<span class="dt">rowid</span>),</a>
+<a class="sourceLine" id="cb20-4" title="4">    start_offset     <span class="dt">INTEGER</span> <span class="kw">NOT</span> <span class="kw">NULL</span>,</a>
+<a class="sourceLine" id="cb20-5" title="5">    end_offset       <span class="dt">INTEGER</span> <span class="kw">NOT</span> <span class="kw">NULL</span>,</a>
+<a class="sourceLine" id="cb20-6" title="6">    sense_rowid      <span class="dt">INTEGER</span> <span class="kw">NOT</span> <span class="kw">NULL</span> <span class="kw">REFERENCES</span> senses(<span class="dt">rowid</span>)</a>
+<a class="sourceLine" id="cb20-7" title="7">);</a></code></pre></div>
+<h2 id="example-queries">Example queries</h2>
+<h3 id="look-up-a-word">Look up a word</h3>
+<div class="sourceCode" id="cb21"><pre class="sourceCode sql"><code class="sourceCode sql"><a class="sourceLine" id="cb21-1" title="1"><span class="co">-- Find all English senses of &quot;bank&quot;</span></a>
+<a class="sourceLine" id="cb21-2" title="2"><span class="kw">SELECT</span> s.<span class="dt">rowid</span>, f.form, l.code <span class="kw">as</span> language, syn.pos, s.sense_index</a>
+<a class="sourceLine" id="cb21-3" title="3"><span class="kw">FROM</span> forms f</a>
+<a class="sourceLine" id="cb21-4" title="4"><span class="kw">JOIN</span> entries e <span class="kw">ON</span> f.entry_rowid <span class="op">=</span> e.<span class="dt">rowid</span></a>
+<a class="sourceLine" id="cb21-5" title="5"><span class="kw">JOIN</span> languages l <span class="kw">ON</span> e.language_rowid <span class="op">=</span> l.<span class="dt">rowid</span></a>
+<a class="sourceLine" id="cb21-6" title="6"><span class="kw">JOIN</span> senses s <span class="kw">ON</span> s.entry_rowid <span class="op">=</span> e.<span class="dt">rowid</span></a>
+<a class="sourceLine" id="cb21-7" title="7"><span class="kw">JOIN</span> synsets syn <span class="kw">ON</span> s.synset_rowid <span class="op">=</span> syn.<span class="dt">rowid</span></a>
+<a class="sourceLine" id="cb21-8" title="8"><span class="kw">WHERE</span> f.normalized_form <span class="op">=</span> <span class="st">&#39;bank&#39;</span> <span class="kw">AND</span> l.code <span class="op">=</span> <span class="st">&#39;en&#39;</span>;</a></code></pre></div>
+<pre><code>rowid   form  language  pos   sense_index
+──────  ────  ────────  ────  ───────────
+127932  bank  en        NOUN  1
+127933  bank  en        NOUN  2
+...
+127949  bank  en        VERB  1</code></pre>
+<h3 id="get-definitions-for-a-synset">Get definitions for a synset</h3>
+<div class="sourceCode" id="cb23"><pre class="sourceCode sql"><code class="sourceCode sql"><a class="sourceLine" id="cb23-1" title="1"><span class="kw">SELECT</span> l.code <span class="kw">as</span> language, d.definition</a>
+<a class="sourceLine" id="cb23-2" title="2"><span class="kw">FROM</span> definitions d</a>
+<a class="sourceLine" id="cb23-3" title="3"><span class="kw">JOIN</span> languages l <span class="kw">ON</span> d.language_rowid <span class="op">=</span> l.<span class="dt">rowid</span></a>
+<a class="sourceLine" id="cb23-4" title="4"><span class="kw">WHERE</span> d.synset_rowid <span class="op">=</span> <span class="dv">35549</span></a>
+<a class="sourceLine" id="cb23-5" title="5"><span class="kw">ORDER</span> <span class="kw">BY</span> l.code;</a></code></pre></div>
+<pre><code>language  definition
+────────  ──────────────────────────────────────────────────
+bg        Място в непосредствена близост до море или река.
+ca        Terra inclinada (especialment la que se troba al...
+en        sloping land (especially the slope beside a body of water)
+ro        Perete, margine (abruptă) a unui râu, ...</code></pre>
+<h3 id="get-examples-with-annotations-for-a-sense">Get examples with annotations for a sense</h3>
+<div class="sourceCode" id="cb25"><pre class="sourceCode sql"><code class="sourceCode sql"><a class="sourceLine" id="cb25-1" title="1"><span class="kw">SELECT</span> e.example, ea.start_offset, ea.end_offset</a>
+<a class="sourceLine" id="cb25-2" title="2"><span class="kw">FROM</span> examples e</a>
+<a class="sourceLine" id="cb25-3" title="3"><span class="kw">JOIN</span> sense_examples se <span class="kw">ON</span> se.example_rowid <span class="op">=</span> e.<span class="dt">rowid</span></a>
+<a class="sourceLine" id="cb25-4" title="4"><span class="kw">JOIN</span> example_annotations ea <span class="kw">ON</span> ea.example_rowid <span class="op">=</span> e.<span class="dt">rowid</span></a>
+<a class="sourceLine" id="cb25-5" title="5">    <span class="kw">AND</span> ea.sense_rowid <span class="op">=</span> se.sense_rowid</a>
+<a class="sourceLine" id="cb25-6" title="6"><span class="kw">WHERE</span> se.sense_rowid <span class="op">=</span> <span class="dv">127932</span>;</a></code></pre></div>
+<pre><code>example                                start_offset  end_offset
+─────────────────────────────────────  ────────────  ──────────
+they pulled the canoe up on the bank   32            36
+he sat on the bank of the river and    14            18</code></pre>
+<h2 id="indexes">Indexes</h2>
+<p>Only indexes used by the web interface are created:</p>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th>Index</th>
+<th>Column(s)</th>
+<th>Purpose</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>idx_forms_normalized</code></td>
+<td><code>forms.normalized_form</code></td>
+<td>Word search</td>
+</tr>
+<tr class="even">
+<td><code>idx_forms_entry</code></td>
+<td><code>forms.entry_rowid</code></td>
+<td>Look up forms for an entry</td>
+</tr>
+<tr class="odd">
+<td><code>idx_senses_entry</code></td>
+<td><code>senses.entry_rowid</code></td>
+<td>Look up senses for an entry</td>
+</tr>
+<tr class="even">
+<td><code>idx_senses_synset</code></td>
+<td><code>senses.synset_rowid</code></td>
+<td>Look up senses for a synset</td>
+</tr>
+<tr class="odd">
+<td><code>idx_definitions_synset</code></td>
+<td><code>definitions.synset_rowid</code></td>
+<td>Definitions for a synset</td>
+</tr>
+<tr class="even">
+<td><code>idx_synset_relations_source</code></td>
+<td><code>synset_relations.source_rowid</code></td>
+<td>Outgoing synset relations</td>
+</tr>
+<tr class="odd">
+<td><code>idx_sense_relations_source</code></td>
+<td><code>sense_relations.source_rowid</code></td>
+<td>Outgoing sense relations</td>
+</tr>
+<tr class="even">
+<td><code>idx_sense_examples_sense</code></td>
+<td><code>sense_examples.sense_rowid</code></td>
+<td>Examples for a sense</td>
+</tr>
+<tr class="odd">
+<td><code>idx_example_annotations_example</code></td>
+<td><code>example_annotations.example_rowid</code></td>
+<td>Annotations for an example</td>
+</tr>
+</tbody>
+</table>
+<h2 id="differences-from-wn-module-schema">Differences from <code>wn</code> module schema</h2>
+<table>
+<colgroup>
+<col style="width: 33%" />
+<col style="width: 33%" />
+<col style="width: 33%" />
+</colgroup>
+<thead>
+<tr class="header">
+<th><code>wn</code> module</th>
+<th>Cygnet DB</th>
+<th>Reason</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td><code>lexicons</code> table with <code>language</code></td>
+<td><code>languages</code> lookup table</td>
+<td>Cygnet merges all wordnets; no per-lexicon metadata</td>
+</tr>
+<tr class="even">
+<td><code>lexicon_rowid</code> FK on most tables</td>
+<td>absent</td>
+<td>Single merged resource</td>
+</tr>
+<tr class="odd">
+<td>Text <code>id</code> column on synsets, entries, senses</td>
+<td>absent</td>
+<td>Saves ~232 MB; web interface uses integer rowids</td>
+</tr>
+<tr class="even">
+<td><code>forms</code> UNIQUE(entry_rowid, form)</td>
+<td>no constraint</td>
+<td>Saves ~35 MB autoindex; dupes filtered at insert</td>
+</tr>
+<tr class="odd">
+<td>language as TEXT in entries, definitions</td>
+<td><code>language_rowid</code> INTEGER FK</td>
+<td>Saves ~20 MB</td>
+</tr>
+</tbody>
+</table>
+
+</body>
+</html>

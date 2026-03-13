@@ -1,0 +1,120 @@
+erDiagram
+    languages {
+        INTEGER rowid PK
+        TEXT code UK "e.g. en, de, cmn-Hans"
+    }
+
+    synsets {
+        INTEGER rowid PK
+        TEXT ili "e.g. i85041"
+        TEXT pos "NOUN, VERB, ADJ, ADV"
+    }
+
+    entries {
+        INTEGER rowid PK
+        INTEGER language_rowid FK
+        TEXT pos "NOUN, VERB, ADJ, ADV"
+    }
+
+    forms {
+        INTEGER rowid PK
+        INTEGER entry_rowid FK
+        TEXT form "surface form"
+        TEXT normalized_form "accent-stripped lowercase"
+        INTEGER rank "0 = lemma"
+    }
+
+    senses {
+        INTEGER rowid PK
+        INTEGER entry_rowid FK
+        INTEGER synset_rowid FK
+        INTEGER sense_index "disambiguation index"
+    }
+
+    definitions {
+        INTEGER rowid PK
+        INTEGER synset_rowid FK
+        TEXT definition
+        INTEGER language_rowid FK
+    }
+
+    synset_relations {
+        INTEGER rowid PK
+        INTEGER source_rowid FK
+        INTEGER target_rowid FK
+        INTEGER type_rowid FK
+    }
+
+    sense_relations {
+        INTEGER rowid PK
+        INTEGER source_rowid FK
+        INTEGER target_rowid FK
+        INTEGER type_rowid FK
+    }
+
+    relation_types {
+        INTEGER rowid PK
+        TEXT type UK "e.g. antonym, class_hypernym"
+    }
+
+    examples {
+        INTEGER rowid PK
+        TEXT example
+    }
+
+    sense_examples {
+        INTEGER rowid PK
+        INTEGER sense_rowid FK
+        INTEGER example_rowid FK
+    }
+
+    example_annotations {
+        INTEGER rowid PK
+        INTEGER example_rowid FK
+        INTEGER start_offset
+        INTEGER end_offset
+        INTEGER sense_rowid FK
+    }
+
+    definition_annotations {
+        INTEGER rowid PK
+        INTEGER definition_rowid FK
+        INTEGER start_offset
+        INTEGER end_offset
+        INTEGER sense_rowid FK
+    }
+
+    resources {
+        INTEGER rowid PK
+        TEXT code "source wordnet id"
+        TEXT version
+        TEXT label "human-readable name"
+        INTEGER language_rowid FK
+        TEXT url
+        TEXT citation
+        TEXT licence
+        TEXT email
+        TEXT status
+        REAL confidence_score
+        TEXT extra "JSON: non-standard attributes"
+    }
+
+    languages ||--o{ entries : "language_rowid"
+    languages ||--o{ definitions : "language_rowid"
+    entries ||--o{ forms : "entry_rowid"
+    entries ||--o{ senses : "entry_rowid"
+    synsets ||--o{ senses : "synset_rowid"
+    synsets ||--o{ definitions : "synset_rowid"
+    synsets ||--o{ synset_relations : "source_rowid"
+    synsets ||--o{ synset_relations : "target_rowid"
+    senses ||--o{ sense_relations : "source_rowid"
+    senses ||--o{ sense_relations : "target_rowid"
+    senses ||--o{ sense_examples : "sense_rowid"
+    senses ||--o{ example_annotations : "sense_rowid"
+    senses ||--o{ definition_annotations : "sense_rowid"
+    examples ||--o{ sense_examples : "example_rowid"
+    examples ||--o{ example_annotations : "example_rowid"
+    definitions ||--o{ definition_annotations : "definition_rowid"
+    relation_types ||--o{ synset_relations : "type_rowid"
+    relation_types ||--o{ sense_relations : "type_rowid"
+    languages ||--o{ resources : "language_rowid"
