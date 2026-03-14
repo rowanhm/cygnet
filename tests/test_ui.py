@@ -589,6 +589,71 @@ class TestUrlParams:
 
 
 # ---------------------------------------------------------------------------
+# Wordnets table: sorting and deduplication
+# ---------------------------------------------------------------------------
+
+class TestWordnetsTable:
+    def _open_wordnets(self, page: Page) -> None:
+        page.locator('button', has_text='Wordnets').click(force=True)
+        page.wait_for_selector('table tbody tr', timeout=_SEARCH_TIMEOUT)
+        page.wait_for_timeout(300)
+
+    def _click_header(self, page: Page, col: str) -> None:
+        page.locator('table thead th', has_text=col).click(force=True)
+        page.wait_for_timeout(300)
+
+    def _row_language_texts(self, page: Page) -> list[str]:
+        """Return the first-column text of every tbody row."""
+        return [
+            page.locator('table tbody tr').nth(i).locator('td').first.text_content().strip()
+            for i in range(page.locator('table tbody tr').count())
+        ]
+
+    def test_cili_appears_exactly_once(self, page_ready: Page):
+        """CILI must appear exactly once — no duplicate resource rows."""
+        self._open_wordnets(page_ready)
+        # Match rows whose Name column (2nd td) contains the CILI label.
+        cili_rows = page_ready.locator('table tbody tr').filter(
+            has=page_ready.locator('td:nth-child(2)').filter(
+                has_text='Collaborative Interlingual Index'
+            )
+        )
+        expect(cili_rows).to_have_count(1)
+
+    def test_sort_by_language_ascending(self, page_ready: Page):
+        """Clicking Language sorts rows so English appears before French."""
+        self._open_wordnets(page_ready)
+        self._click_header(page_ready, 'Language')
+        langs = self._row_language_texts(page_ready)
+        en_idx = next((i for i, t in enumerate(langs) if 'English' in t), None)
+        fr_idx = next((i for i, t in enumerate(langs) if 'French' in t), None)
+        assert en_idx is not None and fr_idx is not None
+        assert en_idx < fr_idx, f"English ({en_idx}) should precede French ({fr_idx}) ascending"
+
+    def test_sort_by_language_descending(self, page_ready: Page):
+        """Clicking Language twice reverses order: French before English."""
+        self._open_wordnets(page_ready)
+        self._click_header(page_ready, 'Language')
+        self._click_header(page_ready, 'Language')
+        langs = self._row_language_texts(page_ready)
+        en_idx = next((i for i, t in enumerate(langs) if 'English' in t), None)
+        fr_idx = next((i for i, t in enumerate(langs) if 'French' in t), None)
+        assert en_idx is not None and fr_idx is not None
+        assert fr_idx < en_idx, f"French ({fr_idx}) should precede English ({en_idx}) descending"
+
+    def test_sort_by_name(self, page_ready: Page):
+        """Clicking Name sorts rows alphabetically by wordnet name."""
+        self._open_wordnets(page_ready)
+        self._click_header(page_ready, 'Name')
+        names = [
+            page_ready.locator('table tbody tr').nth(i)
+                .locator('td').nth(1).text_content().replace('ⓘ', '').strip()
+            for i in range(page_ready.locator('table tbody tr').count())
+        ]
+        assert names == sorted(names, key=str.lower), f"Names not sorted: {names}"
+
+
+# ---------------------------------------------------------------------------
 # ARASAAC images in search results
 # ---------------------------------------------------------------------------
 
