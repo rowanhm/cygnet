@@ -7,7 +7,14 @@ morphologically rich languages where tok2vec was previously disabled.
 import pytest
 import spacy
 
-from cyg.converters import WordNetToCygnetConverter, LANGUAGE_TO_SPACY_MODEL
+from cyg.converters import WordNetToCygnetConverter, _spacy_candidates
+
+_INSTALLED = set(spacy.util.get_installed_models())
+
+
+def _lang_model_installed(lang: str) -> bool:
+    """True if a language-specific (non-fallback) model is installed."""
+    return any(m in _INSTALLED for m in _spacy_candidates(lang)[:-1])
 
 
 # ---------------------------------------------------------------------------
@@ -28,7 +35,9 @@ def _make_converter(lang: str) -> WordNetToCygnetConverter:
         conv.nltk_lemmatizer = WordNetLemmatizer()
     except (ImportError, LookupError):
         pass
-    model_name = LANGUAGE_TO_SPACY_MODEL.get(lang, 'xx_sent_ud_sm')
+    installed = set(spacy.util.get_installed_models())
+    candidates = _spacy_candidates(lang)
+    model_name = next((m for m in candidates if m in installed), candidates[0])
     conv.nlp = spacy.load(model_name, disable=["parser", "ner"])
     return conv
 
@@ -66,8 +75,8 @@ class TestRussianMatching:
     @pytest.fixture(scope="class")
     def conv(self):
         pytest.importorskip("spacy")
-        if "ru" not in LANGUAGE_TO_SPACY_MODEL:
-            pytest.skip("no Russian spaCy model configured")
+        if not _lang_model_installed("ru"):
+            pytest.skip("ru spaCy model not installed")
         return _make_converter('ru')
 
     def test_genitive_month(self, conv):
@@ -100,8 +109,8 @@ class TestSlovenianMatching:
     @pytest.fixture(scope="class")
     def conv(self):
         pytest.importorskip("spacy")
-        if "sl" not in LANGUAGE_TO_SPACY_MODEL:
-            pytest.skip("no Slovenian spaCy model configured")
+        if not _lang_model_installed("sl"):
+            pytest.skip("sl spaCy model not installed")
         return _make_converter('sl')
 
     def test_locative_plural(self, conv):
@@ -121,8 +130,8 @@ class TestPortugueseMatching:
     @pytest.fixture(scope="class")
     def conv(self):
         pytest.importorskip("spacy")
-        if "pt" not in LANGUAGE_TO_SPACY_MODEL:
-            pytest.skip("no Portuguese spaCy model configured")
+        if not _lang_model_installed("pt"):
+            pytest.skip("pt spaCy model not installed")
         return _make_converter('pt')
 
     def test_gerund(self, conv):
@@ -148,8 +157,8 @@ class TestKoreanMatching:
     @pytest.fixture(scope="class")
     def conv(self):
         pytest.importorskip("spacy")
-        if "ko" not in LANGUAGE_TO_SPACY_MODEL:
-            pytest.skip("no Korean spaCy model configured")
+        if not _lang_model_installed("ko"):
+            pytest.skip("ko spaCy model not installed")
         return _make_converter('ko')
 
     def test_adnominal_adjective(self, conv):

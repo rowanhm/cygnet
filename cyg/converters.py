@@ -163,34 +163,24 @@ CONCEPT_RELATIONS_REQUIRING_SAME_CATEGORY = {
     'entails',
 }
 
-# ISO 639-1 language code to spaCy efficient (small) model mapping
-LANGUAGE_TO_SPACY_MODEL = {
-    'ca': 'ca_core_news_sm',      # Catalan
-    'zh': 'zh_core_web_sm',        # Chinese
-    'hr': 'hr_core_news_sm',       # Croatian
-    'da': 'da_core_news_sm',       # Danish
-    'nl': 'nl_core_news_sm',       # Dutch
-    'en': 'en_core_web_sm',        # English
-    'fi': 'fi_core_news_sm',       # Finnish
-    'fr': 'fr_core_news_sm',       # French
-    'de': 'de_core_news_sm',       # German
-    'el': 'el_core_news_sm',       # Greek
-    'it': 'it_core_news_sm',       # Italian
-    'ja': 'ja_core_news_sm',       # Japanese
-    'ko': 'ko_core_news_sm',       # Korean
-    'lt': 'lt_core_news_sm',       # Lithuanian
-    'mk': 'mk_core_news_sm',       # Macedonian
-    'nb': 'nb_core_news_sm',       # Norwegian Bokmål
-    'pl': 'pl_core_news_sm',       # Polish
-    'pt': 'pt_core_news_sm',       # Portuguese
-    'ro': 'ro_core_news_sm',       # Romanian
-    'ru': 'ru_core_news_sm',       # Russian
-    'sl': 'sl_core_news_sm',       # Slovenian
-    'es': 'es_core_news_sm',       # Spanish
-    'sv': 'sv_core_news_sm',       # Swedish
-    'uk': 'uk_core_news_sm',       # Ukrainian
-    'xx': 'xx_sent_ud_sm',         # Multi-language (fallback)
-}
+# Languages where spaCy's primary small model uses the 'web' corpus rather
+# than 'news'.  All other languages follow {lang}_core_news_sm.
+_SPACY_WEB_LANGS = {'en', 'zh'}
+_SPACY_FALLBACK = 'xx_sent_ud_sm'
+
+
+def _spacy_candidates(lang: str) -> list[str]:
+    """Return spaCy model names to try for *lang*, most-preferred first.
+
+    Order: web model (en/zh only) → news model → multilingual fallback.
+    Installed models are tried before downloading anything.
+    """
+    candidates: list[str] = []
+    if lang in _SPACY_WEB_LANGS:
+        candidates.append(f'{lang}_core_web_sm')
+    candidates.append(f'{lang}_core_news_sm')
+    candidates.append(_SPACY_FALLBACK)
+    return candidates
 class WordNetToCygnetConverter:
     """Converts WordNet LMF lexical resources to Cygnet format."""
 
@@ -378,13 +368,15 @@ class WordNetToCygnetConverter:
         """Initialize spaCy and NLTK tools for example processing."""
         logger.info(f"\nInitializing NLP tools for language '{self.lexicon_language}'...")
 
-        # Load appropriate spaCy model
-        model_name = LANGUAGE_TO_SPACY_MODEL.get(self.lexicon_language, 'xx_sent_ud_sm')
-        logger.info(f"  Loading spaCy model '{model_name}'...")
-        # Keep tok2vec so that the morphologizer can assign features that the
-        # lemmatizer needs.  Disabling tok2vec silently breaks lemmatisation for
-        # morphologically rich languages (Russian, Slovenian, Portuguese, …).
+        # Select spaCy model: prefer already-installed candidates, download the
+        # first if none are installed.  Keep tok2vec so that the morphologizer
+        # can assign features the lemmatizer needs (disabling it breaks
+        # lemmatisation for morphologically rich languages).
         disable = ["parser", "ner"]
+        candidates = _spacy_candidates(self.lexicon_language)
+        installed = set(spacy.util.get_installed_models())
+        model_name = next((m for m in candidates if m in installed), candidates[0])
+        logger.info(f"  Loading spaCy model '{model_name}'...")
         try:
             self.nlp = spacy.load(model_name, disable=disable)
         except OSError:
