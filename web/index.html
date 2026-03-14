@@ -1931,18 +1931,18 @@
                                                                                                                         {' '}<span className="text-gray-700">{definition}</span>{defIsFallback && <span className="text-xs text-gray-400 ml-1">[{defLang}]</span>}
                                                                                                                     </span>
                                                                                                                 </div>
-                                                                                                                {concept?.ara && (
-                                                                                                                    <a href={`https://arasaac.org/en/pictograms/${concept.ara[0]}/`}
-                                                                                                                        target="_blank" rel="noopener noreferrer"
-                                                                                                                        onClick={e => e.stopPropagation()}
-                                                                                                                        title="ARASAAC pictogram">
-                                                                                                                        <img src={`https://static.arasaac.org/pictograms/${concept.ara[0]}/${concept.ara[0]}_300.png`}
-                                                                                                                            alt=""
-                                                                                                                            className="h-14 w-14 object-contain rounded bg-white border border-gray-200 flex-shrink-0"
-                                                                                                                            onError={e => { e.target.parentElement.style.display = 'none'; }} />
-                                                                                                                    </a>
-                                                                                                                )}
                                                                                                             </div>
+                                                                                                            {concept?.ara && (
+                                                                                                                <a href={`https://arasaac.org/en/pictograms/${concept.ara[0]}/`}
+                                                                                                                    target="_blank" rel="noopener noreferrer"
+                                                                                                                    onClick={e => e.stopPropagation()}
+                                                                                                                    title="ARASAAC pictogram">
+                                                                                                                    <img src={`https://static.arasaac.org/pictograms/${concept.ara[0]}/${concept.ara[0]}_300.png`}
+                                                                                                                        alt=""
+                                                                                                                        className="h-14 w-14 object-contain rounded bg-white border border-gray-200 flex-shrink-0"
+                                                                                                                        onError={e => { e.target.parentElement.style.display = 'none'; }} />
+                                                                                                                </a>
+                                                                                                            )}
                                                                                                             {hasExtra && (
                                                                                                                 <div className="text-gray-500 text-sm pt-1 flex-shrink-0">
                                                                                                                     {synonymsCollapsed[sense.id] === false ? '▼' : '▶'}
