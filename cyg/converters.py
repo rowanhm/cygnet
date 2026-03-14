@@ -389,9 +389,12 @@ class WordNetToCygnetConverter:
                     f"{name}-{version}/{name}-{version}-py3-none-any.whl"
                 )
                 runner = ['uv', 'pip'] if shutil.which('uv') else [sys.executable, '-m', 'pip']
-                subprocess.run([*runner, 'install', wheel_url], check=True)
+                subprocess.run(
+                    [*runner, 'install', wheel_url],
+                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
                 return spacy.load(name, disable=disable)
-            except Exception as exc:
+            except (Exception, SystemExit) as exc:
                 raise OSError(f"Could not download/load '{name}'") from exc
 
         # Prefer installed candidates; fall back to downloading the first one.
