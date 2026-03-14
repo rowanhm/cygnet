@@ -381,8 +381,12 @@ class WordNetToCygnetConverter:
         # Load appropriate spaCy model
         model_name = LANGUAGE_TO_SPACY_MODEL.get(self.lexicon_language, 'xx_sent_ud_sm')
         logger.info(f"  Loading spaCy model '{model_name}'...")
+        # Keep tok2vec so that the morphologizer can assign features that the
+        # lemmatizer needs.  Disabling tok2vec silently breaks lemmatisation for
+        # morphologically rich languages (Russian, Slovenian, Portuguese, …).
+        disable = ["parser", "ner"]
         try:
-            self.nlp = spacy.load(model_name, disable=["parser", "ner", "tok2vec"])
+            self.nlp = spacy.load(model_name, disable=disable)
         except OSError:
             logger.info(f"  Downloading spaCy model '{model_name}'...")
             import shutil
@@ -397,7 +401,7 @@ class WordNetToCygnetConverter:
                 subprocess.run(['uv', 'pip', 'install', wheel_url], check=True)
             else:
                 subprocess.run([sys.executable, '-m', 'pip', 'install', wheel_url], check=True)
-            self.nlp = spacy.load(model_name, disable=["parser", "ner", "tok2vec"])
+            self.nlp = spacy.load(model_name, disable=disable)
 
         # Initialize NLTK lemmatizer
         logger.info("  Loading NLTK WordNet lemmatizer...")
@@ -524,8 +528,14 @@ class WordNetToCygnetConverter:
         if len(doc) > 0:
             token = doc[0]
 
-            # 1. spaCy lemmatization
-            forms.add(token.lemma_)
+            # 1. spaCy lemmatization.  Some models (e.g. Korean) output
+            # morpheme-split lemmas like "크+다"; add the collapsed form and
+            # the leading stem so that "크+다" and "크+ㄴ" can match via "크".
+            lemma = token.lemma_
+            forms.add(lemma)
+            if '+' in lemma:
+                forms.add(lemma.replace('+', ''))
+                forms.add(lemma.split('+')[0])
 
             # 2. pyinflect - generate various inflections
             if pyinflect is not None:
