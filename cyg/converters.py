@@ -382,14 +382,20 @@ class WordNetToCygnetConverter:
 
         def _download_and_load(name: str):
             logger.info(f"  Downloading spaCy model '{name}'...")
-            version = get_version(name, get_compatibility())
-            wheel_url = (
-                f"https://github.com/explosion/spacy-models/releases/download/"
-                f"{name}-{version}/{name}-{version}-py3-none-any.whl"
-            )
-            runner = ['uv', 'pip'] if shutil.which('uv') else [sys.executable, '-m', 'pip']
-            subprocess.run([*runner, 'install', wheel_url], check=True)
-            return spacy.load(name, disable=disable)
+            try:
+                version = get_version(name, get_compatibility())
+                wheel_url = (
+                    f"https://github.com/explosion/spacy-models/releases/download/"
+                    f"{name}-{version}/{name}-{version}-py3-none-any.whl"
+                )
+                runner = ['uv', 'pip'] if shutil.which('uv') else [sys.executable, '-m', 'pip']
+                subprocess.run(
+                    [*runner, 'install', wheel_url],
+                    check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                )
+                return spacy.load(name, disable=disable)
+            except (Exception, SystemExit) as exc:
+                raise OSError(f"Could not download/load '{name}'") from exc
 
         # Prefer installed candidates; fall back to downloading the first one.
         ordered = [m for m in candidates if m in installed] + \
@@ -583,20 +589,17 @@ class WordNetToCygnetConverter:
 
     def _match_single_word(self, wordform: str, text: str) -> str | None:
         """Match a single word using morphological form matching."""
-        # Get all possible forms of the wordform
         wordform_forms = self._get_all_forms(wordform)
-
         doc = self._get_doc(text)
-
-        # Check each token in the document
         for token in doc:
-            # Get all possible forms of the token
-            token_forms = self._get_all_forms(token.text)
-
-            # Check if there's any overlap
-            if wordform_forms & token_forms:
-                return token.text.lower()
-
+            token_lower = token.text.lower()
+            token_lemma = token.lemma_.lower()
+            token_candidates = {token_lower, token_lemma}
+            if '+' in token_lemma:  # Korean morpheme-split lemmas
+                token_candidates.add(token_lemma.replace('+', ''))
+                token_candidates.add(token_lemma.split('+')[0])
+            if token_candidates & wordform_forms:
+                return token_lower
         return None
 
     def _match_multi_word(self, form_words: list[str], text: str) -> str | None:
@@ -628,11 +631,14 @@ class WordNetToCygnetConverter:
                 token = tokens[j]
                 target_forms = content_word_forms[content_match_idx]
 
-                # Get all forms of this token
-                token_forms = self._get_all_forms(token.text)
+                token_lower = token.text.lower()
+                token_lemma = token.lemma_.lower()
+                token_candidates = {token_lower, token_lemma}
+                if '+' in token_lemma:  # Korean morpheme-split lemmas
+                    token_candidates.add(token_lemma.replace('+', ''))
+                    token_candidates.add(token_lemma.split('+')[0])
 
-                # Check if there's any overlap
-                if target_forms & token_forms:
+                if target_forms & token_candidates:
                     matched_token_indices.append(j)
                     content_match_idx += 1
 

@@ -1337,10 +1337,13 @@ class MergeBuilder:
                     (synsets, len(sense_rowids), code),
                 )
 
-        # Always insert CILI as a resource; synset_count = all ILI-mapped concepts
+        # Insert or update CILI resource with synset_count = all ILI-mapped concepts.
+        # CILI may already appear in self._resources (from the XML header), so use
+        # DELETE + INSERT to ensure the canonical metadata from CILI_RESOURCE wins.
         cili_synset_count = self.cur.execute(
             'SELECT COUNT(*) FROM synsets WHERE ili IS NOT NULL'
         ).fetchone()[0]
+        self.cur.execute('DELETE FROM resources WHERE code = ?', (CILI_RESOURCE['code'],))
         self.cur.execute(
             'INSERT INTO resources '
             '(code, version, label, url, licence, citation, synset_count) '

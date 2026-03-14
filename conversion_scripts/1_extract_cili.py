@@ -112,7 +112,7 @@ def create_cygnet_xml(tsv_rows: list[dict], output_file: str) -> None:
 
     root = ET.Element('CygnetResource')
     root.set('id', 'cili')
-    root.set('label', 'Collaborative Interlingua Index')
+    root.set('label', 'Collaborative Interlingual Index (CILI)')
     root.set('version', '1.0')
 
     concept_layer = ET.SubElement(root, 'ConceptLayer')

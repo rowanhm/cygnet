@@ -2538,7 +2538,7 @@
                                     return wnSort.asc ? cmp : -cmp;
                                 });
                             })();
-                            const SortTh = ({ col, right }) => {
+                            const sortTh = (col, right) => {
                                 const active = wnSort.col === col;
                                 return <th className={`px-3 py-2 border border-gray-200 cursor-pointer select-none hover:bg-gray-200${right ? ' text-right' : ''}`} onClick={() => sortResources(col)}>{col}{active ? (wnSort.asc ? ' ▲' : ' ▼') : ''}</th>;
                             };
@@ -2551,18 +2551,18 @@
                                     <table className="w-full text-sm border-collapse">
                                         <thead>
                                             <tr className="bg-gray-100 text-left">
-                                                <SortTh col="Language"/>
-                                                <SortTh col="Name"/>
-                                                <SortTh col="Concepts" right/>
-                                                <SortTh col="Senses" right/>
-                                                <SortTh col="Version"/>
+                                                {sortTh('Language')}
+                                                {sortTh('Name')}
+                                                {sortTh('Concepts', true)}
+                                                {sortTh('Senses', true)}
+                                                {sortTh('Version')}
                                                 <th className="px-3 py-2 border border-gray-200">Citation</th>
-                                                <SortTh col="Licence"/>
+                                                {sortTh('Licence')}
                                             </tr>
                                         </thead>
                                         <tbody>
                                             {sortedResources.map((r, i) => (
-                                                <tr key={r.code}
+                                                <tr key={r.code + '|' + i}
                                                     ref={r.code === highlightedResource ? highlightedRowRef : null}
                                                     className={r.code === highlightedResource ? 'bg-yellow-100' : (i % 2 === 0 ? 'bg-white' : 'bg-gray-50')}>
                                                     <td className="px-3 py-2 border border-gray-200 whitespace-nowrap">
