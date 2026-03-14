@@ -168,6 +168,20 @@ IMPLICIT_RESOURCES = {
     },
 }
 
+CILI_RESOURCE = {
+    'code':    'cili',
+    'version': '1.0',
+    'label':   'Collaborative Interlingual Index (CILI)',
+    'url':     'https://github.com/globalwordnet/cili',
+    'licence':  'https://creativecommons.org/licenses/by/4.0/',
+    'citation': (
+        'Francis Bond, Piek Vossen, John McCrae, and Christiane Fellbaum. 2016. '
+        'CILI: the Collaborative Interlingual Index. '
+        'In *Proceedings of the 8th Global WordNet Conference (GWC)*, '
+        'pages 50\u201357, Bucharest, Romania. Global Wordnet Association.'
+    ),
+}
+
 INVERSE_SENSE_RELATIONS: dict[str, str] = {
     'antonym':    'antonym',
     'derivation': 'derivation',
@@ -1322,6 +1336,19 @@ class MergeBuilder:
                     'WHERE code = ?',
                     (synsets, len(sense_rowids), code),
                 )
+
+        # Always insert CILI as a resource; synset_count = all ILI-mapped concepts
+        cili_synset_count = self.cur.execute(
+            'SELECT COUNT(*) FROM synsets WHERE ili IS NOT NULL'
+        ).fetchone()[0]
+        self.cur.execute(
+            'INSERT INTO resources '
+            '(code, version, label, url, licence, citation, synset_count) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?)',
+            (CILI_RESOURCE['code'], CILI_RESOURCE['version'], CILI_RESOURCE['label'],
+             CILI_RESOURCE['url'], CILI_RESOURCE['licence'], CILI_RESOURCE['citation'],
+             cili_synset_count),
+        )
 
     def create_indexes(self) -> None:
         """Create indexes before post-processing queries (critical for performance)."""
