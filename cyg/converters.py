@@ -589,20 +589,17 @@ class WordNetToCygnetConverter:
 
     def _match_single_word(self, wordform: str, text: str) -> str | None:
         """Match a single word using morphological form matching."""
-        # Get all possible forms of the wordform
         wordform_forms = self._get_all_forms(wordform)
-
         doc = self._get_doc(text)
-
-        # Check each token in the document
         for token in doc:
-            # Get all possible forms of the token
-            token_forms = self._get_all_forms(token.text)
-
-            # Check if there's any overlap
-            if wordform_forms & token_forms:
-                return token.text.lower()
-
+            token_lower = token.text.lower()
+            token_lemma = token.lemma_.lower()
+            token_candidates = {token_lower, token_lemma}
+            if '+' in token_lemma:  # Korean morpheme-split lemmas
+                token_candidates.add(token_lemma.replace('+', ''))
+                token_candidates.add(token_lemma.split('+')[0])
+            if token_candidates & wordform_forms:
+                return token_lower
         return None
 
     def _match_multi_word(self, form_words: list[str], text: str) -> str | None:
@@ -634,11 +631,14 @@ class WordNetToCygnetConverter:
                 token = tokens[j]
                 target_forms = content_word_forms[content_match_idx]
 
-                # Get all forms of this token
-                token_forms = self._get_all_forms(token.text)
+                token_lower = token.text.lower()
+                token_lemma = token.lemma_.lower()
+                token_candidates = {token_lower, token_lemma}
+                if '+' in token_lemma:  # Korean morpheme-split lemmas
+                    token_candidates.add(token_lemma.replace('+', ''))
+                    token_candidates.add(token_lemma.split('+')[0])
 
-                # Check if there's any overlap
-                if target_forms & token_forms:
+                if target_forms & token_candidates:
                     matched_token_indices.append(j)
                     content_match_idx += 1
 
