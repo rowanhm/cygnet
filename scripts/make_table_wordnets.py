@@ -12,7 +12,7 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
-from latex_utils import fmt_int, licence_label
+from latex_utils import WORDNET_NAMES, fmt_int, licence_label
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _DB = _REPO_ROOT / "web" / "cygnet.db"
@@ -61,8 +61,8 @@ def main() -> None:
     ).fetchall()
 
     display_rows = [
-        (_lang_name(lang_code or "", lang_name_db), code, label,
-         concepts, senses, lic)
+        (_lang_name(lang_code or "", lang_name_db), code,
+         WORDNET_NAMES.get(code, label), concepts, senses, lic)
         for code, label, lang_code, lang_name_db, concepts, senses, lic in raw_rows
     ]
     display_rows.sort(key=lambda r: (r[0].lower(), r[2].lower()))
