@@ -1607,8 +1607,6 @@
 
             const allPosValues = ['NOUN', 'VERB', 'ADJ', 'ADV', 'CONJ', 'ADP', 'NREF', 'UNK'];
 
-            // Loading / error states
-            if (dbError) {
             useEffect(() => { if (dbError) setActiveTab('about'); }, [dbError]);
 
             // Group results
