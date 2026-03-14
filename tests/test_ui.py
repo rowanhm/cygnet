@@ -548,3 +548,66 @@ class TestRelationNames:
             "return window._relTestHook.getLabel('hyponym'); }"
         )
         assert label == '下位語'
+
+
+# ---------------------------------------------------------------------------
+# URL parameters: search_lang and display_lang
+# ---------------------------------------------------------------------------
+
+class TestUrlParams:
+    def _open_settings(self, page: Page) -> None:
+        page.locator('button[title="Settings"]').click()
+        page.wait_for_selector('text=Display results in', timeout=5_000)
+
+    def _display_lang_select(self, page: Page):
+        """Return the 'Display results in' language selector."""
+        return page.locator('label:has-text("Display results in") + select, '
+                            'label:has-text("Display results in") ~ select').first
+
+    def test_display_lang_in_url_after_change(self, page_ready: Page):
+        """Setting display language writes display_lang=xx to the URL hash."""
+        self._open_settings(page_ready)
+        self._display_lang_select(page_ready).select_option('fr')
+        page_ready.wait_for_timeout(300)
+        assert 'display_lang=fr' in page_ready.url
+
+    def test_display_lang_url_restores_on_load(self, page: Page, http_server):
+        """Loading a URL with display_lang=fr restores the display language."""
+        page.goto(http_server + '#/search?q=dog&display_lang=fr')
+        page.wait_for_selector('input[placeholder*="word"]', timeout=_DB_LOAD_TIMEOUT)
+        page.locator('button[title="Settings"]').click()
+        page.wait_for_selector('text=Display results in', timeout=5_000)
+        expect(self._display_lang_select(page)).to_have_value('fr', timeout=3_000)
+
+    def test_search_lang_in_url_after_filter(self, page_ready: Page):
+        """Selecting a language filter writes search_lang=xx to the URL hash."""
+        _search(page_ready, 'dog')
+        self._open_settings(page_ready)
+        page_ready.locator('label').filter(has_text='English').click()
+        page_ready.wait_for_timeout(300)
+        assert 'search_lang=en' in page_ready.url
+
+
+# ---------------------------------------------------------------------------
+# ARASAAC images in search results
+# ---------------------------------------------------------------------------
+
+class TestArasaacInSearch:
+    def test_arasaac_image_shown_in_search_results(self, page_ready: Page):
+        """Search results for 'dog' include a small ARASAAC pictogram."""
+        _search(page_ready, 'dog')
+        page_ready.wait_for_selector('img[src*="arasaac.org"]', timeout=10_000)
+        img = page_ready.locator('img[src*="arasaac.org"]').first
+        expect(img).to_be_visible()
+
+    def test_arasaac_image_in_search_links_to_arasaac(self, page_ready: Page):
+        """The search-result pictogram is wrapped in a link to arasaac.org."""
+        _search(page_ready, 'dog')
+        page_ready.wait_for_selector('a[href*="arasaac.org/en/pictograms"]', timeout=10_000)
+        expect(page_ready.locator('a[href*="arasaac.org/en/pictograms"]').first).to_be_visible()
+
+    def test_no_arasaac_image_for_brightness_in_search(self, page_ready: Page):
+        """Search results for 'brightness' (no ARASAAC data) show no pictogram."""
+        _search(page_ready, 'brightness')
+        page_ready.wait_for_selector('.concept-inner', timeout=_SEARCH_TIMEOUT)
+        expect(page_ready.locator('img[src*="arasaac.org"]')).to_have_count(0)

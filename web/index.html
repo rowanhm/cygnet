@@ -926,8 +926,9 @@
                 } else if (view === 'search') {
                     const params = new URLSearchParams();
                     if (currentSearch) params.set('q', currentSearch);
-                    if (languageFilter.size > 0) params.set('lang', Array.from(languageFilter).join(','));
+                    if (languageFilter.size > 0) params.set('search_lang', Array.from(languageFilter).join(','));
                     if (posFilter.size > 0) params.set('pos', Array.from(posFilter).join(','));
+                    if (definitionLanguage !== 'en') params.set('display_lang', definitionLanguage);
                     if (senseFilter) params.set('s', senseFilter);
                     const qs = params.toString();
                     newUrl = qs ? '#/search?' + qs : '#/search';
@@ -939,7 +940,7 @@
                 if (newUrl && newUrl !== window.location.hash) {
                     window.history.pushState({}, '', newUrl);
                 }
-            }, [view, currentSearch, languageFilter, posFilter, senseFilter, selectedConcept, selectedSense, dbReady, activeTab]);
+            }, [view, currentSearch, languageFilter, posFilter, senseFilter, selectedConcept, selectedSense, dbReady, activeTab, definitionLanguage]);
 
             // Handle popstate
             useEffect(() => {
@@ -954,13 +955,15 @@
                         setActiveTab('browser');
                         const params = new URLSearchParams(queryString || '');
                         const urlSearch = params.get('q');
-                        const urlLang = params.get('lang') ? new Set(params.get('lang').split(',')) : new Set();
+                        const urlSearchLang = params.get('search_lang') ? new Set(params.get('search_lang').split(',')) : new Set();
+                        const urlDisplayLang = params.get('display_lang');
                         const urlPos = params.get('pos') ? new Set(params.get('pos').split(',')) : new Set();
                         const urlSense = params.get('sense');
                         const urlSenseFilter = params.get('s');
                         const urlConcept = params.get('concept');
 
-                        setLanguageFilter(urlLang);
+                        setLanguageFilter(urlSearchLang);
+                        if (urlDisplayLang) setDefinitionLanguage(urlDisplayLang);
                         setPosFilter(urlPos);
                         setSenseFilter(urlSenseFilter);
                         setSynonymsCollapsed({});
@@ -1928,6 +1931,17 @@
                                                                                                                         {' '}<span className="text-gray-700">{definition}</span>{defIsFallback && <span className="text-xs text-gray-400 ml-1">[{defLang}]</span>}
                                                                                                                     </span>
                                                                                                                 </div>
+                                                                                                                {concept?.ara && (
+                                                                                                                    <a href={`https://arasaac.org/en/pictograms/${concept.ara[0]}/`}
+                                                                                                                        target="_blank" rel="noopener noreferrer"
+                                                                                                                        onClick={e => e.stopPropagation()}
+                                                                                                                        title="ARASAAC pictogram">
+                                                                                                                        <img src={`https://static.arasaac.org/pictograms/${concept.ara[0]}/${concept.ara[0]}_300.png`}
+                                                                                                                            alt=""
+                                                                                                                            className="h-14 w-14 object-contain rounded bg-white border border-gray-200 flex-shrink-0"
+                                                                                                                            onError={e => { e.target.parentElement.style.display = 'none'; }} />
+                                                                                                                    </a>
+                                                                                                                )}
                                                                                                             </div>
                                                                                                             {hasExtra && (
                                                                                                                 <div className="text-gray-500 text-sm pt-1 flex-shrink-0">
