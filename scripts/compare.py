@@ -67,7 +67,7 @@ def setup_wn(data_dir: Path, urls: list[str]) -> None:
         pkg_id = url_to_wn_id(url)
         print(f"  {pkg_id} ...", end=" ", flush=True)
         try:
-            wn.download(pkg_id, progress_handler=None)
+            wn.download(url, progress_handler=None)
             print("ok")
         except Exception as e:
             print(f"failed ({e})")
@@ -85,7 +85,15 @@ def db_stats(db_path: Path) -> dict:
         tables = {r[0] for r in conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         )}
+        # Count loaded wordnets: 'lexicons' in wn, 'resources' in Cygnet
+        if "lexicons" in tables:
+            wordnets = conn.execute("SELECT COUNT(*) FROM lexicons").fetchone()[0]
+        elif "resources" in tables:
+            wordnets = conn.execute("SELECT COUNT(*) FROM resources WHERE code != 'cili'").fetchone()[0]
+        else:
+            wordnets = 0
         return {
+            "wordnets":         wordnets,
             "synsets":          _count(conn, "synsets", tables),
             "entries":          _count(conn, "entries", tables),
             "senses":           _count(conn, "senses", tables),
@@ -112,6 +120,7 @@ def latex_table(
     # rows: (metric, cygnet_value, wn_value, comment)
     rows = [
         ("DB size (MB)",       f"{cygnet_mb:.1f}",                    f"{wn_mb:.1f}",  f"+ {prov_mb:.1f}\\,MB provenance DB"),
+        ("Wordnets loaded",    fmt(cygnet["wordnets"]),                fmt(wndb["wordnets"]),             ""),
         ("Synsets",            fmt(cygnet["synsets"]),                 fmt(wndb["synsets"]),              ""),
         ("Words",              fmt(cygnet["entries"]),                 fmt(wndb["entries"]),              ""),
         ("Senses",             fmt(cygnet["senses"]),                  fmt(wndb["senses"]),               ""),

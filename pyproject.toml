@@ -8,7 +8,7 @@ dependencies = [
     "nltk",
     "pyinflect",
     "langcodes[data]",
-    "wn>=0.13.0",
+    "wn>=1.0",
 ]
 
 [project.optional-dependencies]
