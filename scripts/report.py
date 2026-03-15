@@ -795,12 +795,16 @@ def issues_from_json_log(log: dict) -> list[Issue]:
             explanation=(
                 f"{ex_skipped:,} example sentence(s) were discarded during conversion "
                 "because the target word could not be found in the sentence text "
-                "(after lemmatisation). These examples are absent from the pre-synthesised file."
+                "after morphological analysis. Note that some of these mismatches "
+                "are due to limitations in our morphological analyser rather than "
+                "errors in your data — we apologise for the false positives. "
+                "These examples are absent from the pre-synthesised file."
             ),
             recommendation=(
-                "Check that the example sentence actually contains the word (or an "
-                "inflected form) that it is supposed to illustrate. "
-                "Sentences that have been paraphrased or truncated may not match."
+                "Where the word (or an inflected form) genuinely appears in the "
+                "sentence, no action is needed on your side — this is a known "
+                "limitation of our analyser. Otherwise, check that the sentence "
+                "has not been paraphrased or truncated."
             ),
             items=items,
         ))
