@@ -718,8 +718,10 @@ class TestParseConflictsLog:
 # ---------------------------------------------------------------------------
 
 class TestIssuesFromConflictsLog:
+    _empty_data = _mod.WordnetData()
+
     def test_empty_inputs_return_no_issues(self):
-        assert issues_from_conflicts_log([], []) == []
+        assert issues_from_conflicts_log([], [], self._empty_data) == []
 
     def test_reversed_relations_produce_critical_issue(self):
         lines = [
@@ -728,7 +730,7 @@ class TestIssuesFromConflictsLog:
             "Reversed synset_relation skipped [wn]: cili.i3 hypernym cili.i4 "
             "(conflicts with cili.i4 hypernym cili.i3 from [oewn])",
         ]
-        result = issues_from_conflicts_log(lines, [])
+        result = issues_from_conflicts_log(lines, [], self._empty_data)
         assert len(result) == 1
         issue = result[0]
         assert issue.severity == "CRITICAL"
@@ -740,7 +742,7 @@ class TestIssuesFromConflictsLog:
             "Cycle removed [wn-1.0]: cili.i1 hypernym cili.i2 "
             "(existing chain: cili.i2 → cili.i1 → cili.i1)",
         ]
-        result = issues_from_conflicts_log([], lines)
+        result = issues_from_conflicts_log([], lines, self._empty_data)
         assert len(result) == 1
         issue = result[0]
         assert issue.severity == "CRITICAL"

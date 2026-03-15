@@ -812,8 +812,16 @@ def issues_from_json_log(log: dict) -> list[Issue]:
     return issues
 
 
+_CONCEPT_ID_RE = re.compile(r'[A-Za-z0-9_-]+\.i\d+')
+
+
+def _label_ids_in(text: str, data: WordnetData) -> str:
+    """Replace every concept ID in *text* with its labelled form."""
+    return _CONCEPT_ID_RE.sub(lambda m: label_concept(m.group(), data), text)
+
+
 def issues_from_conflicts_log(
-    reversed_rels: list[str], cycles: list[str]
+    reversed_rels: list[str], cycles: list[str], data: WordnetData
 ) -> list[Issue]:
     """Build Issue objects from lines extracted from relation_conflicts.log."""
     issues: list[Issue] = []
@@ -829,7 +837,8 @@ def issues_from_conflicts_log(
             m = _pat.search(line)
             if m:
                 src, rel, tgt, other = m.groups()
-                items.append(f"{src} {rel} {tgt}  (contradicts [{other}])")
+                item = f"{label_concept(src, data)} {rel} {label_concept(tgt, data)}  (contradicts [{other}])"
+                items.append(item)
                 other_resources.add(other)
         others_str = ", ".join(sorted(other_resources)) or "another wordnet"
         issues.append(Issue(
@@ -861,9 +870,13 @@ def issues_from_conflicts_log(
             m = _cpat.search(line)
             if m:
                 src, rel, tgt, chain = m.groups()
-                items.append(f"{src} {rel} {tgt}  (chain: {chain})")
+                labelled_chain = _label_ids_in(chain, data)
+                item = f"{label_concept(src, data)} {rel} {label_concept(tgt, data)}  (chain: {labelled_chain})"
+                items.append(item)
             else:
-                items.append(line.split(": ", 1)[-1] if ": " in line else line)
+                items.append(_label_ids_in(
+                    line.split(": ", 1)[-1] if ": " in line else line, data
+                ))
         issues.append(Issue(
             severity="CRITICAL",
             title="Hypernym cycles spanning multiple wordnets",
@@ -988,7 +1001,7 @@ def report_file(path: Path, markdown: bool = False) -> None:
 
     # Augment with merge-time relation conflicts log
     reversed_rels, cycles = parse_conflicts_log(data.resource_id, path.stem)
-    issues.extend(issues_from_conflicts_log(reversed_rels, cycles))
+    issues.extend(issues_from_conflicts_log(reversed_rels, cycles, data))
 
     print(format_report(path, data, issues, markdown))
 
