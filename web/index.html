@@ -771,6 +771,31 @@
                 return loadedConcepts[cid] || null;
             };
 
+            // Returns [text, actualLang] for a concept's definitions, falling back
+            // through English then the first available language.
+            const selectDef = (defs, lang, fallback = '') => {
+                if (!defs) return [fallback, null];
+                if (defs[lang]) return [defs[lang], lang];
+                if (defs.en) return [defs.en, 'en'];
+                const first = Object.entries(defs)[0];
+                return first ? [first[1], first[0]] : [fallback, null];
+            };
+
+            // Renders a language-code badge when the displayed language differs
+            // from the preferred one, e.g. [fr].  Pass ml='ml-1' or 'ml-0.5'.
+            const LangBadge = ({ lang, currentLang, ml = 'ml-1' }) =>
+                lang && lang !== currentLang
+                    ? <span className={`text-xs text-gray-400 ${ml}`}>[{lang}]</span>
+                    : null;
+
+            // Renders a comma-separated list of clickable wordforms.
+            const renderWordformList = (items, onClick) => items.map((item, i) => (
+                <span key={i}>{i > 0 && ', '}
+                    <span onClick={(e) => { e.stopPropagation(); onClick(item); }}
+                        className="text-blue-600 hover:underline cursor-pointer">{item}</span>
+                </span>
+            ));
+
             // Returns { ids, isIndirect } for the best available ARASAAC pictogram(s).
             // Priority: direct image > hypernym > eq_synonym > similar.
             const getArasaacFallback = (concept) => {
@@ -1924,8 +1949,7 @@
                                                                                                         }
                                                                                                     });
                                                                                                 }
-                                                                                                const defEntry = concept?.d ? (concept.d[definitionLanguage] ? [concept.d[definitionLanguage], definitionLanguage] : concept.d.en ? [concept.d.en, 'en'] : Object.entries(concept.d)[0] ? [Object.values(concept.d)[0], Object.keys(concept.d)[0]] : ['', null]) : ['', null];
-                                                                                                const [definition, defLang] = defEntry;
+                                                                                                const [definition, defLang] = selectDef(concept?.d, definitionLanguage);
                                                                                                 const defIsFallback = defLang && defLang !== definitionLanguage;
                                                                                                 const hasExtra = !!(sense.v?.length || synonyms.length || sense.ex?.length);
                                                                                                 return (
@@ -1941,9 +1965,9 @@
                                                                                                                 <div onClick={(e) => { e.stopPropagation(); handleConceptClick(group.conceptId); }}
                                                                                                                     className="bg-white px-2 py-1 rounded border border-gray-300 hover:border-blue-400 hover:shadow-sm transition-all text-left cursor-pointer flex-shrink concept-inner">
                                                                                                                     <span className="text-base">
-                                                                                                                        {(() => { const li = getConceptLabel(parseInt(group.conceptId), definitionLanguage); return li ? <><span className="font-semibold text-gray-800">{li.form}</span>{li.lang !== definitionLanguage && <span className="text-xs text-gray-400 ml-0.5">[{li.lang}]</span>}{' · '}</> : null; })()}
+                                                                                                                        {(() => { const li = getConceptLabel(parseInt(group.conceptId), definitionLanguage); return li ? <><span className="font-semibold text-gray-800">{li.form}</span>{<LangBadge lang={li.lang} currentLang={definitionLanguage} ml="ml-0.5" />}{' · '}</> : null; })()}
                                                                                                                         <span className="text-gray-600 italic">{getPosName(pos)}.</span>
-                                                                                                                        {' '}<span className="text-gray-700">{definition}</span>{defIsFallback && <span className="text-xs text-gray-400 ml-1">[{defLang}]</span>}
+                                                                                                                        {' '}<span className="text-gray-700">{definition}</span>{<LangBadge lang={defLang} currentLang={definitionLanguage} />}
                                                                                                                     </span>
                                                                                                                 </div>
                                                                                                             </div>
@@ -1974,23 +1998,13 @@
                                                                                                                 {sense.v && sense.v.length > 0 && (
                                                                                                                     <div className="text-sm text-gray-600">
                                                                                                                         <span className="font-medium">Variants:</span>{' '}
-                                                                                                                        {sense.v.map((variant, vi) => (
-                                                                                                                            <span key={vi}>{vi > 0 && ', '}
-                                                                                                                                <span onClick={(e) => { e.stopPropagation(); handleWordformClick(variant); }}
-                                                                                                                                    className="text-blue-600 hover:underline cursor-pointer">{variant}</span>
-                                                                                                                            </span>
-                                                                                                                        ))}
+                                                                                                                        {renderWordformList(sense.v, handleWordformClick)}
                                                                                                                     </div>
                                                                                                                 )}
                                                                                                                 {synonyms.length > 0 && (
                                                                                                                     <div className="text-sm text-gray-600">
                                                                                                                         <span className="font-medium">Synonyms:</span>{' '}
-                                                                                                                        {synonyms.map((syn, si) => (
-                                                                                                                            <span key={si}>{si > 0 && ', '}
-                                                                                                                                <span onClick={(e) => { e.stopPropagation(); handleWordformClick(syn); }}
-                                                                                                                                    className="text-blue-600 hover:underline cursor-pointer">{syn}</span>
-                                                                                                                            </span>
-                                                                                                                        ))}
+                                                                                                                        {renderWordformList(synonyms, handleWordformClick)}
                                                                                                                     </div>
                                                                                                                 )}
                                                                                                                 {sense.ex && sense.ex.length > 0 && (
@@ -2034,12 +2048,7 @@
                                         });
                                     }
 
-                                    const mainDefEntry = concept.d
-                                        ? (concept.d[definitionLanguage] ? [concept.d[definitionLanguage], definitionLanguage]
-                                            : concept.d.en ? [concept.d.en, 'en']
-                                            : Object.entries(concept.d)[0] || ['(No definition available)', null])
-                                        : ['(No definition available)', null];
-                                    const [mainDef, shownLang] = mainDefEntry;
+                                    const [mainDef, shownLang] = selectDef(concept.d, definitionLanguage, '(No definition available)');
                                     const mainDefIsFallback = shownLang && shownLang !== definitionLanguage;
                                     const altDefs = concept.d ? Object.entries(concept.d).filter(([l]) => l !== shownLang) : [];
 
@@ -2054,7 +2063,7 @@
                                                     <p className="text-base">
                                                         {conceptLabel && <><span className="font-medium">{conceptLabel}</span>{' \u2014 '}</>}<span className="text-gray-600 italic">{getPosName(concept.oc)}.</span>{' '}
                                                         {concept.da ? renderDefinitionWithLinks(mainDef, concept.da) : mainDef}
-                                                        {mainDefIsFallback && <span className="text-xs text-gray-400 ml-1">[{shownLang}]</span>}
+                                                        {<LangBadge lang={shownLang} currentLang={definitionLanguage} />}
                                                         {concept.dr?.[shownLang] && renderProvenance('definitions', concept.dr[shownLang])}
                                                         {concept.ili && <span className="text-sm ml-2">⟪{concept.ili}⟫</span>}
                                                     </p>
@@ -2171,7 +2180,7 @@
                                                                                 <button onClick={() => handleConceptClick(rel.to)}
                                                                                     className="text-blue-600 hover:underline">
                                                                                     {li?.form || `#${rel.to}`}
-                                                                                    {li?.lang && li.lang !== definitionLanguage && <span className="text-gray-400 text-xs ml-0.5">[{li.lang}]</span>}
+                                                                                    {<LangBadge lang={li?.lang} currentLang={definitionLanguage} ml="ml-0.5" />}
                                                                                 </button>
                                                                                 {renderCompactProvenance('synsets', rel.to)}
                                                                             </span>
@@ -2195,11 +2204,11 @@
                                                                                 </button>
                                                                                 {conceptLabel && conceptLabel !== toSense?.l && (
                                                                                     <span className="text-gray-500">
-                                                                                        ({conceptLabel}{li.lang !== definitionLanguage && <span className="text-gray-400 text-xs ml-0.5">[{li.lang}]</span>})
+                                                                                        ({conceptLabel}{<LangBadge lang={li.lang} currentLang={definitionLanguage} ml="ml-0.5" />})
                                                                                     </span>
                                                                                 )}
                                                                                 {li?.lang && li.lang !== definitionLanguage && conceptLabel === toSense?.l && (
-                                                                                    <span className="text-gray-400 text-xs">[{li.lang}]</span>
+                                                                                    <LangBadge lang={li.lang} currentLang={definitionLanguage} ml="" />
                                                                                 )}
                                                                                 {renderCompactProvenance('senses', parseInt(toSenseId))}
                                                                             </span>
@@ -2247,7 +2256,7 @@
                                                             placeholder={`e.g. i${fromIli?.replace(/^i/,'') || '46360'}`}
                                                             className="w-40 border border-gray-300 rounded px-2 py-1 text-sm focus:outline-none focus:border-blue-400 font-mono"
                                                         />
-                                                        {targetLabel && <span className="text-sm text-gray-600">{targetLabel.form}{targetLabel.lang !== definitionLanguage && <span className="text-xs text-gray-400 ml-1">[{targetLabel.lang}]</span>}</span>}
+                                                        {targetLabel && <span className="text-sm text-gray-600">{targetLabel.form}{<LangBadge lang={targetLabel.lang} currentLang={definitionLanguage} />}</span>}
                                                         {pathTargetIli && !pathTargetRowid && <span className="text-xs text-gray-400 italic">not found</span>}
                                                         <button
                                                             onClick={() => pathTargetRowid && runPath(pathTargetRowid)}
@@ -2270,7 +2279,7 @@
                                                                             onClick={() => handleConceptClick(step.node)}
                                                                             className={`px-1.5 py-0.5 rounded text-xs border ${step.node === parseInt(selectedConcept) ? 'bg-blue-100 border-blue-400 text-blue-800 font-semibold' : 'bg-white border-gray-300 text-blue-600 hover:border-blue-400'}`}>
                                                                             {li?.form || `#${step.node}`}
-                                                                            {li?.lang && li.lang !== definitionLanguage && <span className="text-gray-400 ml-0.5">[{li.lang}]</span>}
+                                                                            {<LangBadge lang={li?.lang} currentLang={definitionLanguage} ml="ml-0.5" />}
                                                                         </button>
                                                                     </React.Fragment>
                                                                 );
