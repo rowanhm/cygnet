@@ -814,13 +814,6 @@ def issues_from_json_log(log: dict) -> list[Issue]:
     return issues
 
 
-_CONCEPT_ID_RE = re.compile(r'[A-Za-z0-9_-]+\.i\d+')
-
-
-def _label_ids_in(text: str, data: WordnetData) -> str:
-    """Replace every concept ID in *text* with its labelled form."""
-    return _CONCEPT_ID_RE.sub(lambda m: label_concept(m.group(), data), text)
-
 
 def issues_from_conflicts_log(
     reversed_rels: list[dict], cycles: list[dict], data: WordnetData
